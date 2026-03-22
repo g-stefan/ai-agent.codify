@@ -1,64 +1,94 @@
-# Agent Prepare Prompt (Expert) (`agent-prepare-prompt.expert.py`)
+# `agent-prepare-prompt.expert.py` Documentation
 
 ## Description
-The `agent-prepare-prompt.expert.py` script is a utility designed to construct a comprehensive Markdown prompt for an "expert" AI agent. It achieves this by stitching together static template files and dynamic data extracted from a JSON issue document (e.g., exported from Gitea or GitHub). 
 
-Specifically, the script concatenates the following components in order to generate the final output prompt:
-1.  **Begin Template**: A predefined introductory text (e.g., role definitions, system instructions).
-2.  **Issue Context**: The username of the issue author, the issue title, and the main issue body extracted from the provided JSON file.
-3.  **Comments Context**: A sequential list of all comments on the issue, including the author's username and the comment body.
-4.  **End Template**: A predefined concluding text (e.g., final instructions, output formatting constraints).
+`agent-prepare-prompt.expert.py` is a Python utility script designed to generate an "expert prompt" markdown file by synthesizing data from a Gitea (or similar) issue JSON file with predefined text templates. 
 
-## Configuration Options
-This script does not use traditional command-line arguments (like `-f` or `--input`). Instead, it is configured entirely through **Environment Variables**:
+In addition to text generation, the script parses the issue and its comments for attached files (assets). It securely downloads these assets into a designated working directory, utilizing an optional authorization token. This is particularly useful in automated AI agent workflows where an agent needs full context of an issue, including the conversation history and attached files, formatted into a single cohesive prompt.
 
-| Environment Variable       | Default Value     | Description |
-|----------------------------|-------------------|-------------|
-| `PROMPT_EXPERT_BEGIN`      | `"prompt.begin.md"`| The file path to the introductory portion of the prompt. |
-| `PROMPT_EXPERT_END`        | `"prompt.end.md"`  | The file path to the concluding portion of the prompt. |
-| `ISSUE_FILENAME`           | `"issue.json"`     | The file path to the JSON document containing the issue data and comments. |
-| `PROMPT_EXPERT_FILENAME`   | `"prompt.md"`      | The destination file path where the fully assembled prompt will be written. |
+### Key Features:
+- **Prompt Generation:** Combines a prefix template (`prompt.begin.md`), the issue metadata (author, title, body, comments), and a suffix template (`prompt.end.md`) into a single output file.
+- **Asset Extraction:** Automatically discovers, extracts, and downloads file attachments (assets) from both the main issue and its comment threads.
+- **Secure Downloads:** Supports authenticated downloads using a `GITEA_TOKEN` to prevent 401/403 HTTP errors when fetching private assets.
+- **Robust Error Handling:** Checks for missing files, handles HTTP download errors gracefully, streams large file downloads to manage memory, and exits with non-zero status codes on failure.
 
-## Exit Codes
-*   **`0` (Success)**: The prompt was successfully assembled and written to the output file.
-*   **`1` (Error)**: Execution halted. This occurs if any of the input files (`BEGIN`, `END`, or the `ISSUE`) cannot be read/parsed, or if the script lacks permission to write the output file.
+---
 
-## Examples
+## Configuration / Command Line Options
 
-### 1. Basic Execution (Defaults)
-If all your files (`prompt.begin.md`, `prompt.end.md`, and `issue.json`) are in the current working directory, you can simply run:
-```sh
+While the script imports the `argparse` module, it **does not use standard command-line flags** (like `--file` or `-o`). Instead, its behavior is strictly configured using **Environment Variables**. 
+
+If an environment variable is not provided, the script falls back to sensible defaults.
+
+### Environment Variables
+
+| Variable | Default Value | Description |
+| :--- | :--- | :--- |
+| `PROMPT_EXPERT_BEGIN` | `prompt.begin.md` | Path to the markdown file containing the introductory text of the prompt. |
+| `PROMPT_EXPERT_END` | `prompt.end.md` | Path to the markdown file containing the concluding text of the prompt. |
+| `PROMPT_EXPERT_FILENAME` | `prompt.md` | The resulting output file path where the generated expert prompt will be saved. |
+| `ISSUE_FILENAME` | `issue.json` | Path to the JSON file containing the issue and comment data (expected in an array format). |
+| `WORK_WRITE` | `work.write` | The base working directory. Assets will be downloaded into a subdirectory named `assets` within this path (`WORK_WRITE/assets/`). |
+| `GITEA_TOKEN` | *(None)* | The API authorization token used to authenticate asset downloads. |
+
+---
+
+## Usage Examples
+
+### Example 1: Basic Execution (Using Defaults)
+If your working directory already contains `prompt.begin.md`, `prompt.end.md`, and `issue.json`, you can run the script without any arguments:
+
+```bash
 python agent-prepare-prompt.expert.py
 ```
-This will generate a `prompt.md` file in the same directory.
 
-### 2. Custom Environment Variables (Windows PowerShell)
-If your files are located in specific subdirectories, you can map them using environment variables before running the script:
+### Example 2: Custom File Paths
+You can override the default file locations by setting environment variables before executing the script.
+
+**Linux / macOS:**
+```bash
+PROMPT_EXPERT_BEGIN="templates/header.md" \
+PROMPT_EXPERT_END="templates/footer.md" \
+ISSUE_FILENAME="data/bug_report.json" \
+PROMPT_EXPERT_FILENAME="output/final_prompt.md" \
+python agent-prepare-prompt.expert.py
+```
+
+**Windows (PowerShell):**
 ```powershell
-$env:PROMPT_EXPERT_BEGIN="work.read\prompt.expert.begin.md"
-$env:PROMPT_EXPERT_END="work.read\prompt.expert.end.md"
-$env:ISSUE_FILENAME="work.write\issue.json"
-$env:PROMPT_EXPERT_FILENAME="work.write\final_expert_prompt.md"
-
+$env:PROMPT_EXPERT_BEGIN="templates/header.md"
+$env:PROMPT_EXPERT_END="templates/footer.md"
+$env:ISSUE_FILENAME="data/bug_report.json"
+$env:PROMPT_EXPERT_FILENAME="output/final_prompt.md"
 python agent-prepare-prompt.expert.py
 ```
 
-### 3. Custom Environment Variables (Windows CMD)
-```cmd
-set PROMPT_EXPERT_BEGIN=work.read\prompt.expert.begin.md
-set PROMPT_EXPERT_END=work.read\prompt.expert.end.md
-set ISSUE_FILENAME=work.write\issue.json
-set PROMPT_EXPERT_FILENAME=work.write\final_expert_prompt.md
+### Example 3: Downloading Private Assets with a Token
+If the issue contains assets hosted on a private Gitea instance, you must supply a token to authorize the downloads.
 
+**Linux / macOS:**
+```bash
+GITEA_TOKEN="your_personal_access_token_here" python agent-prepare-prompt.expert.py
+```
+
+**Windows (PowerShell):**
+```powershell
+$env:GITEA_TOKEN="your_personal_access_token_here"
 python agent-prepare-prompt.expert.py
 ```
 
-### 4. Custom Environment Variables (Linux / macOS / Git Bash)
-You can define the variables inline for a single execution:
-```sh
-PROMPT_EXPERT_BEGIN="work.read/prompt.expert.begin.md" \
-PROMPT_EXPERT_END="work.read/prompt.expert.end.md" \
-ISSUE_FILENAME="work.write/issue.json" \
-PROMPT_EXPERT_FILENAME="work.write/final_expert_prompt.md" \
-python agent-prepare-prompt.expert.py
-```
+---
+
+## Prerequisites
+- **Python 3.x**
+- **`requests` library:** The script relies on the `requests` library for handling HTTP downloads. Ensure it is installed in your environment:
+  ```bash
+  pip install requests
+  ```
+
+## Output File Naming Strategy for Assets
+When assets are downloaded, the script attempts to prevent filename collisions and ensure safety by renaming the downloaded files using their internal UUID. 
+
+Files are saved in the `WORK_WRITE/assets/` directory using the format:
+`<uuid><original_file_extension>`
+*(e.g., `123e4567-e89b-12d3-a456-426614174000.png`)*
