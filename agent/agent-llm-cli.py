@@ -180,7 +180,6 @@ async def chat_loop(
         first_print_time: Optional[float] = None
         last_print_time = time.time()
         last_spinner_update = 0.0
-        in_think_block = False
         
         # Accumulators for streaming text, tool calls, and custom attributes like thought signatures
         current_tool_calls = {}
@@ -340,18 +339,26 @@ async def chat_loop(
                         
                     if content:
                         current_assistant_content += content
-                        if "<think>" in content:
-                            in_think_block = True
-                            content = content.replace("<think>", "\033[95m<think>\n")
                         
-                        if "</think>" in content:
-                            in_think_block = False
-                            content = content.replace("</think>", "\n</think>\033[0m")
+                        starts = current_assistant_content.count("<think>")
+                        ends = current_assistant_content.count("</think>")
+                        is_thinking = starts > ends
+                        
+                        display_content = content
+                        if "<think>" in display_content:
+                            display_content = display_content.replace("<think>", "\033[95m<think>\n")
+                        
+                        if "</think>" in display_content:
+                            display_content = display_content.replace("</think>", "\n</think>\033[0m")
                             
-                        if in_think_block and "<think>" not in content:
-                            sys.stdout.write(f"\033[95m{content}\033[0m")
+                        if is_thinking:
+                            if "<think>" in content:
+                                sys.stdout.write(f"{display_content}\033[0m")
+                            else:
+                                sys.stdout.write(f"\033[95m{display_content}\033[0m")
                         else:
-                            sys.stdout.write(content)
+                            sys.stdout.write(display_content)
+                            
                         just_printed = True
                         
                     if just_printed:

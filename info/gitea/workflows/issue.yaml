@@ -13,4 +13,5 @@ jobs:
   Gitea-Issue-Action:
     runs-on: windows
     steps:
-      - run: pushd "X:\Agent" && python agent.py && popd
+      - run: pushd "%CODIFY_RUNNER_PATH%" && run.ai-agent.codify.cmd && popd
+
