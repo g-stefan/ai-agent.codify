@@ -1,4 +1,4 @@
-name: Gitea Issue Action
+name: Codify Gitea Action
 run-name: Codify
 on:
   issues:
@@ -13,5 +13,5 @@ jobs:
   Gitea-Issue-Action:
     runs-on: windows
     steps:
-      - run: pushd "%CODIFY_RUNNER_PATH%" && run.ai-agent.codify.cmd && popd
+      - run: agent.runner.cmd
 
