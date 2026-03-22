@@ -1,0 +1,16 @@
+name: Gitea Issue Action
+run-name: Codify is checking issues
+on:
+  issues:
+    types: [opened,assigned]
+  issue_comment:
+    types: [created]
+defaults:
+  run:
+    shell: cmd
+
+jobs:
+  Gitea-Issue-Action:
+    runs-on: windows
+    steps:
+      - run: pushd "X:\Agent" && call agent-run.cmd && popd

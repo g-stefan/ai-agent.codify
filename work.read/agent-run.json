@@ -1,0 +1,176 @@
+[
+  {
+    "tag": "gitea-issues-get",
+    "command": [
+      "python",
+      "gitea-issues-get.py",
+      "--first-open",
+      "--out",
+      "$ISSUE_FILENAME",
+      "--assignee",
+      "$GITEA_WORK_REPO_OWNER",
+      "--owner",
+      "$GITEA_MAIN_REPO_OWNER",
+      "--repo",
+      "$GITEA_MAIN_REPO_NAME",
+      "--url",
+      "$GITEA_INSTANCE",
+      "--token",
+      "$GITEA_TOKEN",
+      "--error-on-no-issue"
+    ],
+    "error-exit-ok": true
+  },
+  {
+    "tag": "agent-check-issue.py",
+    "command": [
+      "python",
+      "agent-check-issue.py"
+    ],
+    "error-exit-ok": true
+  },
+  {
+    "tag": "gitea-fork",
+    "command": [
+      "python",
+      "gitea-fork.py",
+      "$GITEA_INSTANCE",
+      "$GITEA_MAIN_REPO_OWNER",
+      "$GITEA_MAIN_REPO_NAME",
+      "--token",
+      "$GITEA_TOKEN",
+      "--ok-if-forked-already"
+    ]
+  },
+  {
+    "tag": "git-clone",
+    "command": [
+      "python",
+      "git-clone.py"
+    ],
+    "required": false
+  },
+  {
+    "tag": "git-fetch",
+    "command": [
+      "python",
+      "git-fetch.py"
+    ],
+    "required": false
+  },
+  {
+    "tag": "agent-prepare-prompt.expert",
+    "command": [
+      "python",
+      "agent-prepare-prompt.expert.py"
+    ]
+  },
+  {
+    "tag": "agent-llm-cli.expert",
+    "command": [
+      "python",
+      "agent-llm-cli.py",
+      "$PROMPT_EXPERT_FILENAME",
+      "--temp",
+      "0.7",
+      "--session",
+      "$PROMPT_EXPERT_SESSION",
+      "--system",
+      "$PROMPT_EXPERT_SYSTEM",
+      "--url",
+      "$LLM_SERVER",
+      "--mcp",
+      "$MCP_MEMORY",
+      "--mcp-env-base",
+      "MEMORY",
+      "--mcp",
+      "$MCP_WORKSPACE",
+      "--mcp-env-base",
+      "WORKSPACE",
+      "--no-spinner"
+    ]
+  },
+  {
+    "tag": "agent-prepare-prompt.report",
+    "command": [
+      "python",
+      "agent-prepare-prompt.report.py"
+    ]
+  },
+  {
+    "tag": "agent-llm-cli.report",
+    "command": [
+      "python",
+      "agent-llm-cli.py",
+      "$PROMPT_REPORT_FILENAME",
+      "--temp",
+      "0.7",
+      "--system",
+      "$PROMPT_REPORT_SYSTEM",
+      "--url",
+      "$LLM_SERVER",
+      "--mcp",
+      "$MCP_REPORT",
+      "--mcp-env-base",
+      "REPORT",
+      "--no-spinner"
+    ]
+  },
+  {
+    "tag": "agent-report-to-json",
+    "command": [
+      "python",
+      "agent-report-to-json.py",
+      "$PROMPT_REPORT_OUTPUT",
+      "$PROMPT_REPORT_JSON"
+    ]
+  },
+  {
+    "tag": "agent-work-to-json.py",
+    "command": [
+      "python",
+      "agent-work-to-json.py"
+    ]
+  },
+  {
+    "tag": "git-push",
+    "command": [
+      "python",
+      "git-push.py"
+    ]
+  },
+  {
+    "tag": " gitea-issues-comment",
+    "command": [
+      "python",
+      "gitea-issues-comment.py",
+      "--issue",
+      "$ISSUE_FILENAME",
+      "--work",
+      "$WORK_REPORT_FILENAME",
+      "--token",
+      "$GITEA_TOKEN"
+    ]
+  },
+  {
+    "tag": "gitea-pull-request",
+    "command": [
+      "python",
+      "gitea-pull-request.py",
+      "--fork",
+      "$GITEA_WORK_REPO_OWNER",
+      "--pr-json",
+      "$WORK_REPORT_FILENAME",
+      "--issue-json",
+      "$ISSUE_FILENAME",
+      "--head",
+      "$GITEA_MAIN_HEAD",
+      "--repo",
+      "$GITEA_MAIN_REPO_OWNER/$GITEA_MAIN_REPO_NAME",
+      "--url",
+      "$GITEA_INSTANCE",
+      "--token",
+      "$GITEA_TOKEN"
+    ]
+  }
+]
