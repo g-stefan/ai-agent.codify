@@ -19,6 +19,7 @@ with open(WORK_REPORT_FILENAME, "r", encoding="utf8") as f:
 currentPath=os.getcwd()
 os.chdir(WORK_PATH+"/"+GITEA_MAIN_REPO_NAME)
 
+# dont return on error
 res = subprocess.run(
     [
         "git",
@@ -27,8 +28,6 @@ res = subprocess.run(
         "--prune-tags"
     ]
 )
-if res.returncode != 0:
-    sys.exit(res.returncode)
 
 res = subprocess.run(
     [

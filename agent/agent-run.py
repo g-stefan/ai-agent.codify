@@ -123,8 +123,14 @@ async def main_async():
 
         # Prepare environment copy for this specific command execution
         cmd_env = os.environ.copy()
-        env_overrides = {str(k): str(v) for k, v in env_overrides.items()}
-        cmd_env.update(env_overrides)
+        
+        # Sequentially process environment overrides to allow secondary resolution
+        # E.g., "MY_VAR": "val1", "MY_VAR2": "$MY_VAR/val2"
+        for k, v in env_overrides.items():
+            # Expand variables within the value itself using the current state of cmd_env
+            expanded_val = expand_args(str(v), cmd_env)
+            # Update the environment immediately so subsequent keys can use it
+            cmd_env[str(k)] = expanded_val
 
         # Expand environment variables within the command arguments
         expanded_cmd = expand_args(raw_cmd, cmd_env)

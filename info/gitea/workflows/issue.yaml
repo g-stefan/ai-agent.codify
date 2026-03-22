@@ -13,4 +13,4 @@ jobs:
   Gitea-Issue-Action:
     runs-on: windows
     steps:
-      - run: pushd "X:\Agent" && call agent-run.cmd && popd
+      - run: pushd "X:\Agent" && python agent.py && popd

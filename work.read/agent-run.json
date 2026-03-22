@@ -3,7 +3,7 @@
     "tag": "gitea-issues-get",
     "command": [
       "python",
-      "gitea-issues-get.py",
+      "utilities/gitea-issues-get.py",
       "--first-open",
       "--out",
       "$ISSUE_FILENAME",
@@ -25,7 +25,7 @@
     "tag": "agent-check-issue.py",
     "command": [
       "python",
-      "agent-check-issue.py"
+      "agent/agent-check-issue.py"
     ],
     "error-exit-ok": true
   },
@@ -33,7 +33,7 @@
     "tag": "gitea-fork",
     "command": [
       "python",
-      "gitea-fork.py",
+      "utilities/gitea-fork.py",
       "$GITEA_INSTANCE",
       "$GITEA_MAIN_REPO_OWNER",
       "$GITEA_MAIN_REPO_NAME",
@@ -46,7 +46,7 @@
     "tag": "git-clone",
     "command": [
       "python",
-      "git-clone.py"
+      "utilities/git-clone.py"
     ],
     "required": false
   },
@@ -54,7 +54,7 @@
     "tag": "git-fetch",
     "command": [
       "python",
-      "git-fetch.py"
+      "utilities/git-fetch.py"
     ],
     "required": false
   },
@@ -62,14 +62,14 @@
     "tag": "agent-prepare-prompt.expert",
     "command": [
       "python",
-      "agent-prepare-prompt.expert.py"
+      "agent/agent-prepare-prompt.expert.py"
     ]
   },
   {
     "tag": "agent-llm-cli.expert",
     "command": [
       "python",
-      "agent-llm-cli.py",
+      "agent/agent-llm-cli.py",
       "$PROMPT_EXPERT_FILENAME",
       "--temp",
       "0.7",
@@ -94,14 +94,14 @@
     "tag": "agent-prepare-prompt.report",
     "command": [
       "python",
-      "agent-prepare-prompt.report.py"
+      "agent/agent-prepare-prompt.report.py"
     ]
   },
   {
     "tag": "agent-llm-cli.report",
     "command": [
       "python",
-      "agent-llm-cli.py",
+      "agent/agent-llm-cli.py",
       "$PROMPT_REPORT_FILENAME",
       "--temp",
       "0.7",
@@ -120,7 +120,7 @@
     "tag": "agent-report-to-json",
     "command": [
       "python",
-      "agent-report-to-json.py",
+      "agent/agent-report-to-json.py",
       "$PROMPT_REPORT_OUTPUT",
       "$PROMPT_REPORT_JSON"
     ]
@@ -129,21 +129,21 @@
     "tag": "agent-work-to-json.py",
     "command": [
       "python",
-      "agent-work-to-json.py"
+      "agent/agent-work-to-json.py"
     ]
   },
   {
     "tag": "git-push",
     "command": [
       "python",
-      "git-push.py"
+      "utilities/git-push.py"
     ]
   },
   {
     "tag": " gitea-issues-comment",
     "command": [
       "python",
-      "gitea-issues-comment.py",
+      "utilities/gitea-issues-comment.py",
       "--issue",
       "$ISSUE_FILENAME",
       "--work",
@@ -156,7 +156,7 @@
     "tag": "gitea-pull-request",
     "command": [
       "python",
-      "gitea-pull-request.py",
+      "utilities/gitea-pull-request.py",
       "--fork",
       "$GITEA_WORK_REPO_OWNER",
       "--pr-json",
