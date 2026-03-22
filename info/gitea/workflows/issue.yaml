@@ -1,5 +1,5 @@
 name: Gitea Issue Action
-run-name: Codify is checking issues
+run-name: Codify
 on:
   issues:
     types: [opened,assigned]
