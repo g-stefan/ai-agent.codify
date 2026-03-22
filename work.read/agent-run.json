@@ -86,8 +86,10 @@
       "--mcp",
       "$MCP_WORKSPACE",
       "--mcp-env-base",
-      "WORKSPACE",
-      "--no-spinner"
+      "WORKSPACE",      
+      "--no-spinner",
+      "--assets",
+      "$WORK_WRITE/assets"
     ]
   },
   {

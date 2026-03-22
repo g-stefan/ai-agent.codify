@@ -42,7 +42,8 @@ def encode_image(filepath: str) -> Tuple[str, str]:
     if not mime_type:
         mime_type = "image/jpeg"
     with open(filepath, "rb") as f:
-        b64_str = base64.b64encode(f.read()).decode('utf-8')
+        # Strictly remove newlines/carriage returns to prevent data URI corruption
+        b64_str = base64.b64encode(f.read()).decode('utf-8').replace('\n', '').replace('\r', '').strip()
     return b64_str, mime_type
 
 def extract_pdf_text(filepath: str) -> str:
@@ -155,19 +156,26 @@ async def chat_loop(
 
         log_debug(debug_file, "request", data)
 
-        payload = json.dumps(data).encode('utf-8')
+        # Use separators to minify JSON, significantly reducing payload size to prevent server-side truncation
+        payload = json.dumps(data, separators=(',', ':')).encode('utf-8')
         
+        # Explicitly declare Content-Length to avoid HTTP chunking issues with large payloads
         headers = {
             'Content-Type': 'application/json',
-            'Accept': 'text/event-stream'
+            'Accept': 'text/event-stream',
+            'Content-Length': str(len(payload)),
+            'Connection': 'keep-alive',
+            'User-Agent': 'agent-llm-cli/1.0'
         }
+
         if api_key:
             headers['Authorization'] = f'Bearer {api_key}'
 
         req = urllib.request.Request(
             url,
             data=payload,
-            headers=headers
+            headers=headers,
+            method="POST"
         )
 
         loop = asyncio.get_running_loop()
@@ -599,6 +607,7 @@ async def async_main():
     parser.add_argument("--system", type=str, help="Path to a markdown text file containing the system message.")
     parser.add_argument("--images", type=str, nargs='+', help="Path(s) to image files to include in the prompt.")
     parser.add_argument("--pdfs", type=str, nargs='+', help="Path(s) to PDF files to include in the prompt.")
+    parser.add_argument("--assets", type=str, nargs='+', help="Path(s) to folder(s) containing image (png, jpg, jpeg) and PDF files to automatically include in the prompt.")
     parser.add_argument("--mcp", type=str, action=MCPAppendAction, nargs='+', help="Commands to start MCP servers (e.g., 'npx -y ...') or HTTP URLs ('http://.../sse' for SSE, 'http://.../mcp' for Streamable HTTP). Can be specified multiple times.")
     parser.add_argument("--mcp-api-key", type=str, action=MCPAPIKeyAction, help="API key for the preceding MCP server.")
     parser.add_argument("--mcp-env-base", type=str, action=MCPEnvBaseAction, help="Prefix for environment variables to pass to the preceding MCP server in stdio mode (e.g., 'FOO' to map FOO_API_KEY to API_KEY).")
@@ -619,8 +628,8 @@ async def async_main():
     args = parser.parse_args()
 
     # Ensure at least some form of input was provided
-    if not any([args.input, args.prompt, args.session, args.images, args.pdfs]):
-        parser.error("You must provide at least one input source: a file, a prompt string (-p), images, pdfs, or a session.")
+    if not any([args.input, args.prompt, args.session, args.images, args.pdfs, args.assets]):
+        parser.error("You must provide at least one input source: a file, a prompt string (-p), images, pdfs, assets, or a session.")
 
     if args.insecure:
         # Globally disable SSL verification for standard library functions (helps with external module connections)
@@ -698,6 +707,30 @@ async def async_main():
             print(f"\033[91m[!] Error reading system file '{args.system}': {e}\033[0m", file=sys.stderr)
             sys.exit(1)
 
+    # Process --assets folder(s) to dynamically populate args.pdfs and args.images
+    if getattr(args, 'assets', None):
+        if args.images is None:
+            args.images = []
+        if args.pdfs is None:
+            args.pdfs = []
+            
+        for asset_dir in args.assets:
+            if os.path.isdir(asset_dir):
+                print(f"\033[94m[*] Scanning assets folder: {asset_dir}...\033[0m", file=sys.stderr)
+                # Sort files to ensure deterministic ingestion order
+                for filename in sorted(os.listdir(asset_dir)):
+                    filepath = os.path.join(asset_dir, filename)
+                    if os.path.isfile(filepath):
+                        ext = os.path.splitext(filename)[1].lower()
+                        if ext == '.pdf':
+                            if filepath not in args.pdfs:
+                                args.pdfs.append(filepath)
+                        elif ext in ['.png', '.jpg', '.jpeg']:
+                            if filepath not in args.images:
+                                args.images.append(filepath)
+            else:
+                print(f"\033[93m[*] Warning: Asset path '{asset_dir}' is not a valid directory.\033[0m", file=sys.stderr)
+
     user_content = []
 
     # 2. PDF Files
@@ -739,6 +772,11 @@ async def async_main():
     # 4. Images
     if args.images:
         for img_path in args.images:
+            file_size = os.path.getsize(img_path)
+            # Add a warning for massive images which often cause endpoint processing failures or proxy drops
+            if file_size > 15 * 1024 * 1024:
+                print(f"\033[93m[!] Warning: Image '{img_path}' is very large ({file_size / 1024 / 1024:.1f}MB). The server might reject it or hit memory limits.\033[0m", file=sys.stderr)
+                
             print(f"\033[94m[*] Encoding image: {img_path}...\033[0m", file=sys.stderr)
             try:
                 b64, mime = encode_image(img_path)
