@@ -1,117 +1,98 @@
 # Agent LLM CLI (`agent-llm-cli.py`)
 
-## Description
+`agent-llm-cli.py` is a powerful, multimodal command-line interface designed to interact with Large Language Models (LLMs) via OpenAI-compatible Chat APIs (such as `llama.cpp` server). 
 
-`agent-llm-cli.py` is a robust, asynchronous command-line interface (CLI) client designed to interact with OpenAI-compatible LLM endpoints (specifically tailored for `llama.cpp` servers). It acts as an advanced bridge for multimodal AI inference, offering streaming responses, token usage tracking, and built-in integration with the **Model Context Protocol (MCP)**.
+It supports streaming text generation, embedding images into prompts, maintaining conversation history across sessions, and tracking lifetime token usage. One of its standout features is the dynamic integration with **Model Context Protocol (MCP)** servers, allowing the LLM to seamlessly discover and execute external tools directly from the command line.
 
-The script supports a rich set of input modalities. Users can provide text prompts directly or via files, extract text from PDFs, and attach images (which are automatically base64-encoded). Furthermore, its standout feature is the ability to connect to external MCP servers (via standard I/O, SSE, or Streamable HTTP). This enables the LLM to autonomously discover and execute local or remote tools in real-time, feeding the tool execution results back into the context for continuous conversation.
-
-Additional features include chat session management (for continuous conversations), UI spinners for visual feedback during generation, system prompt injection, and comprehensive debug logging.
-
----
+## Features
+- **Multimodal Support:** Easily include text, single images, or entire folders of images in your prompts.
+- **MCP Integration:** Connect to MCP servers via standard input/output (stdio) or HTTP (SSE/Streamable HTTP) to give your LLM access to external tools and APIs.
+- **Session Management:** Save and load chat history to maintain continuous conversations.
+- **Streaming Output:** Real-time text generation with a built-in thinking/working spinner.
+- **Token Tracking:** Detailed usage statistics, including context limits, historical tokens, and estimated tool/prompt tokens.
 
 ## Command Line Options
 
-The script is highly configurable via command-line arguments:
+### Input Sources
+*Requires at least one of the following inputs:*
 
-### Input Modalities
-| Option | Description |
-| :--- | :--- |
-| `input` (positional) | Path to a text file containing the prompt, or the direct prompt string itself. |
-| `-p`, `--prompt` | Pass a direct string on the command line to use as the prompt. |
-| `--system` | Path to a markdown text file containing the system message/instructions. |
-| `--images` | Path(s) to image files (e.g., `.png`, `.jpg`) to include in the prompt. |
-| `--pdfs` | Path(s) to PDF files to automatically extract text from and include in the prompt. |
-| `--assets` | Path(s) to folders containing images and PDF files to automatically detect and include. |
+- `input` (Positional): Path to a text file containing the prompt, or the direct prompt string itself.
+- `-p`, `--prompt`: Pass a direct string on the command line to use as the prompt.
+- `--session`: Path to a JSON file to save/load the chat history for continuous conversations.
+- `--images`: Path(s) to one or more image files to include in the prompt.
+- `--assets`: Path(s) to folder(s) containing image files (`.png`, `.jpg`, `.jpeg`) to automatically include in the prompt.
 
-### Session & State Management
-| Option | Description |
-| :--- | :--- |
-| `--session` | Path to a JSON file to save/load the chat history for continuous conversations. |
-| `--usage-file` | Path to a JSON file to save and load lifetime token usage tracking. |
-| `--tool-session` | Path to a JSON file to log the tool descriptions/schemas loaded into the model. |
+### Context & Configuration
+- `--system`: Path to a text/markdown file containing the system message (only inserted if not already present in the session).
+- `--url`: URL of the Chat API endpoint (default: `http://127.0.0.1:8080/v1/chat/completions`). Note: Auto-corrects `/completion` to `/v1/chat/completions`.
+- `--api-key`: API key for the LLM server. Can also be set via the `API_KEY` environment variable.
+- `--model`: Model name to request from the server (default: `default`).
+- `--temp`: Generation temperature (default: `0.7`).
+- `--max-tokens`: Maximum tokens to predict. `-1` means infinity (default: `-1`).
 
-### MCP (Model Context Protocol) Config
-| Option | Description |
-| :--- | :--- |
-| `--mcp` | Commands to start MCP servers (e.g., `npx -y ...`) or HTTP URLs (SSE/Streamable HTTP). Can be specified multiple times for multiple servers. |
-| `--mcp-api-key` | API key for the preceding `--mcp` server argument. |
-| `--mcp-env-base` | Prefix for environment variables to pass to the preceding MCP server in stdio mode (e.g., `FOO` maps `FOO_API_KEY` to `API_KEY`). |
+### Model Context Protocol (MCP)
+- `--mcp`: Command to start an MCP server (e.g., `npx -y ...`) or an HTTP URL (`http://.../sse` or `http://.../mcp`). Can be specified multiple times for multiple servers.
+- `--mcp-api-key`: API key for the *preceding* MCP server specified.
+- `--mcp-env-base`: Prefix for environment variables to pass to the *preceding* MCP server in stdio mode (e.g., `FOO` to map `FOO_API_KEY` to `API_KEY`).
 
-### LLM Server & Execution Parameters
-| Option | Description |
-| :--- | :--- |
-| `--url` | URL of the LLM server Chat API endpoint (default: `http://127.0.0.1:8080/v1/chat/completions`). |
-| `--api-key` | API key for the LLM server (can also use `API_KEY` env var). |
-| `--model` | Model name to request (default: `default`). |
-| `--temp` | Generation temperature (default: `0.7`). |
-| `--max-tokens` | Maximum tokens to predict. `-1` means infinity (default: `-1`). |
-| `--context-limit` | Maximum context size (e.g., `8192`) used to display context usage percentage. |
+### Tracking & Debugging
+- `--context-limit`: Maximum context size (e.g., `8192`) to display usage percentage in the summary.
+- `--usage-file`: Path to a JSON file to save and load lifetime token usage tracking.
+- `--tool-session`: Path to a JSON file to log the tool descriptions loaded into the model.
+- `--debug`: Path to a JSONL file to log raw API requests and responses for debugging.
 
-### Networking & Debugging
-| Option | Description |
-| :--- | :--- |
-| `--timeout` | Timeout in seconds for individual HTTP requests (default: `360`). |
-| `--prompt-timeout` | Maximum overall time allowed for the entire interaction (generation + tool execution) (default: `360`). |
-| `--insecure` | Disable SSL certificate verification (useful for local self-signed endpoints). |
-| `--debug` | Path to a JSONL file to log API requests and responses for debugging. |
-| `--no-spinner` | Disable the thinking and working UI spinner animation in the console. |
+### Network & UI
+- `--insecure`: Allow insecure server connections when using SSL (disables certificate verification).
+- `--timeout`: Timeout in seconds for HTTP requests (default: `360`).
+- `--prompt-timeout`: Maximum overall time in seconds allowed for the generation, thinking, and tool execution (default: `360`).
+- `--no-spinner`: Disable the thinking and working spinner animation on the console.
 
----
+## Examples
 
-## Usage Examples
-
-### 1. Basic Text Prompt
-Send a simple text prompt to a locally running llama.cpp server.
+**1. Basic Text Prompting**
 ```bash
-python agent-llm-cli.py -p "Explain the theory of relativity in simple terms."
+python agent-llm-cli.py "What is the capital of France?"
 ```
 
-### 2. Multimodal Input (Text + Images + PDFs)
-Analyze a dataset utilizing an image chart, a PDF manual, and a specific text instruction.
+**2. Using a File and System Prompt**
 ```bash
-python agent-llm-cli.py "Please summarize the manual and describe the chart." \
-  --images chart.png \
-  --pdfs manual.pdf
+python agent-llm-cli.py prompt.txt --system system_instructions.md
 ```
 
-### 3. Using MCP Servers (Tool Execution)
-Connect the LLM to a local filesystem tool using the Model Context Protocol, allowing the AI to list and read your files.
+**3. Multimodal Prompt (with Images)**
 ```bash
-python agent-llm-cli.py -p "What files are in my current directory?" \
-  --mcp "npx -y @modelcontextprotocol/server-filesystem ./"
+python agent-llm-cli.py "Describe this image in detail" --images photo.jpg graph.png
 ```
 
-### 4. Continuous Chat Session
-Save the context of a conversation to a file so that you can continue it in subsequent commands.
+**4. Continuous Conversation with Session Tracking**
 ```bash
-# First interaction
-python agent-llm-cli.py -p "My name is Alice." --session chat_history.json
+# Turn 1
+python agent-llm-cli.py "Hello, my name is Alice." --session chat.json
 
-# Second interaction (the model will remember the name)
-python agent-llm-cli.py -p "What is my name?" --session chat_history.json
+# Turn 2 (The model will remember Alice)
+python agent-llm-cli.py "What is my name?" --session chat.json
 ```
 
-### 5. Advanced Configuration (Remote Server, System Prompt, Usage Tracking)
-Connect to an external API (like Gemini or OpenAI compatible endpoints), using a system prompt, setting a temperature, and tracking token usage over time.
+**5. Integrating with an MCP Server (Stdio)**
 ```bash
-python agent-llm-cli.py "Write a python script for a web server." \
-  --url "https://api.example.com/v1/chat/completions" \
-  --api-key "your_api_key_here" \
-  --model "example-model-v2" \
-  --temp 0.2 \
-  --system system_instructions.md \
-  --usage-file token_usage.json
+python agent-llm-cli.py "List the files in my current directory" \
+    --mcp "npx -y @modelcontextprotocol/server-filesystem ."
 ```
 
----
-
-## Prerequisites
-To use all features of this script, ensure the following Python packages are installed:
-- `mcp` (Required for `--mcp` tool execution features)
-- `pypdf` (Required for `--pdfs` text extraction features)
-
-You can install them via pip:
+**6. Integrating with an MCP Server (HTTP/SSE) with Authentication**
 ```bash
-pip install mcp pypdf
+python agent-llm-cli.py "Fetch the latest weather data" \
+    --mcp "http://localhost:3000/sse" \
+    --mcp-api-key "your-secret-token"
+```
+
+**7. Advanced Usage: Tracking Usage, Custom URL, and High Temperature**
+```bash
+python agent-llm-cli.py "Write a creative sci-fi story." \
+    --url "https://api.openai.com/v1/chat/completions" \
+    --api-key "sk-..." \
+    --model "gpt-4o" \
+    --temp 0.9 \
+    --usage-file metrics.json \
+    --context-limit 128000
 ```

@@ -1,7 +1,6 @@
 mariadb
 mcp
 paramiko
-pypdf
 requests
 starlette
 uvicorn

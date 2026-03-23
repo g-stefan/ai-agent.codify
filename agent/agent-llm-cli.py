@@ -47,28 +47,6 @@ def encode_image(filepath: str) -> Tuple[str, str]:
         b64_str = base64.b64encode(f.read()).decode('utf-8').replace('\n', '').replace('\r', '').strip()
     return b64_str, mime_type
 
-def extract_pdf_text(filepath: str) -> str:
-    """Extracts text from a PDF file using pypdf."""
-    try:
-        import pypdf
-    except ImportError:
-        print("\033[91m[!] Error: 'pypdf' library is required to read PDFs.\033[0m", file=sys.stderr)
-        print("\033[93m    Install it with: pip install pypdf\033[0m", file=sys.stderr)
-        sys.exit(1)
-        
-    try:
-        text_blocks = []
-        with open(filepath, "rb") as f:
-            reader = pypdf.PdfReader(f)
-            for i, page in enumerate(reader.pages):
-                page_text = page.extract_text()
-                if page_text:
-                    text_blocks.append(f"--- Page {i+1} ---\n{page_text}")
-        return "\n".join(text_blocks)
-    except Exception as e:
-        print(f"\033[91m[!] Error reading PDF '{filepath}': {e}\033[0m", file=sys.stderr)
-        sys.exit(1)
-
 def estimate_text_chars(messages: List[Dict[str, Any]]) -> int:
     """Helper to count characters in text parts of messages for rough token estimation."""
     chars = 0
@@ -588,7 +566,7 @@ class MCPEnvBaseAction(argparse.Action):
 
 async def async_main():
     parser = argparse.ArgumentParser(
-        description="Stream multimodal input (text, images, PDFs) to a llama.cpp server with MCP support."
+        description="Stream multimodal input (text, images) to a llama.cpp server with MCP support."
     )
     
     parser.add_argument("input", type=str, nargs='?', default=None, help="Path to a text file containing the prompt, or the direct prompt string itself.")
@@ -596,8 +574,7 @@ async def async_main():
     parser.add_argument("--session", type=str, help="Path to a JSON file to save/load the chat history for continuous conversations.")
     parser.add_argument("--system", type=str, help="Path to a markdown text file containing the system message.")
     parser.add_argument("--images", type=str, nargs='+', help="Path(s) to image files to include in the prompt.")
-    parser.add_argument("--pdfs", type=str, nargs='+', help="Path(s) to PDF files to include in the prompt.")
-    parser.add_argument("--assets", type=str, nargs='+', help="Path(s) to folder(s) containing image (png, jpg, jpeg) and PDF files to automatically include in the prompt.")
+    parser.add_argument("--assets", type=str, nargs='+', help="Path(s) to folder(s) containing image (png, jpg, jpeg) files to automatically include in the prompt.")
     parser.add_argument("--mcp", type=str, action=MCPAppendAction, nargs='+', help="Commands to start MCP servers (e.g., 'npx -y ...') or HTTP URLs ('http://.../sse' for SSE, 'http://.../mcp' for Streamable HTTP). Can be specified multiple times.")
     parser.add_argument("--mcp-api-key", type=str, action=MCPAPIKeyAction, help="API key for the preceding MCP server.")
     parser.add_argument("--mcp-env-base", type=str, action=MCPEnvBaseAction, help="Prefix for environment variables to pass to the preceding MCP server in stdio mode (e.g., 'FOO' to map FOO_API_KEY to API_KEY).")
@@ -618,8 +595,8 @@ async def async_main():
     args = parser.parse_args()
 
     # Ensure at least some form of input was provided
-    if not any([args.input, args.prompt, args.session, args.images, args.pdfs, args.assets]):
-        parser.error("You must provide at least one input source: a file, a prompt string (-p), images, pdfs, assets, or a session.")
+    if not any([args.input, args.prompt, args.session, args.images, args.assets]):
+        parser.error("You must provide at least one input source: a file, a prompt string (-p), images, assets, or a session.")
 
     if args.insecure:
         # Globally disable SSL verification for standard library functions (helps with external module connections)
@@ -697,12 +674,10 @@ async def async_main():
             print(f"\033[91m[!] Error reading system file '{args.system}': {e}\033[0m", file=sys.stderr)
             sys.exit(1)
 
-    # Process --assets folder(s) to dynamically populate args.pdfs and args.images
+    # Process --assets folder(s) to dynamically populate args.images
     if getattr(args, 'assets', None):
         if args.images is None:
             args.images = []
-        if args.pdfs is None:
-            args.pdfs = []
             
         for asset_dir in args.assets:
             if os.path.isdir(asset_dir):
@@ -712,10 +687,7 @@ async def async_main():
                     filepath = os.path.join(asset_dir, filename)
                     if os.path.isfile(filepath):
                         ext = os.path.splitext(filename)[1].lower()
-                        if ext == '.pdf':
-                            if filepath not in args.pdfs:
-                                args.pdfs.append(filepath)
-                        elif ext in ['.png', '.jpg', '.jpeg']:
+                        if ext in ['.png', '.jpg', '.jpeg']:
                             if filepath not in args.images:
                                 args.images.append(filepath)
             else:
@@ -723,14 +695,7 @@ async def async_main():
 
     user_content = []
 
-    # 2. PDF Files
-    if args.pdfs:
-        for pdf_path in args.pdfs:
-            print(f"\033[94m[*] Extracting text from PDF: {pdf_path}...\033[0m", file=sys.stderr)
-            pdf_text = extract_pdf_text(pdf_path)
-            user_content.append({"type": "text", "text": f"\n--- Content of {pdf_path} ---\n{pdf_text}\n"})
-
-    # 3. Main Text Prompt
+    # 2. Main Text Prompt
     prompt_text = ""
     
     if args.input:
@@ -759,7 +724,7 @@ async def async_main():
     if not user_content:
         print("\033[93m[!] Warning: The provided prompt content is empty.\033[0m", file=sys.stderr)
 
-    # 4. Images
+    # 3. Images
     if args.images:
         for img_path in args.images:
             file_size = os.path.getsize(img_path)
