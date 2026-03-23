@@ -3,4 +3,6 @@ rem SPDX-FileCopyrightText: 2026 Grigore Stefan <g_stefan@yahoo.com>
 rem SPDX-License-Identifier: Unlicense
 
 call agent-run.env.cmd
-python agent-report-to-json.py %PROMPT_REPORT_OUTPUT% %PROMPT_REPORT_JSON%
+pushd ".."
+python agent/agent-report-to-json.py %PROMPT_REPORT_OUTPUT% %PROMPT_REPORT_JSON%
+popd

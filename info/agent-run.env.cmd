@@ -36,19 +36,19 @@ set MEMORY_DB_SEARCH_LIMIT=8
 set MEMORY_PORT=48101
 set MEMORY_ENABLE_RERANKING=off
 set MEMORY_MEMORY_DIR=memory
-set MCP_MEMORY=python mcp-server-memory.py --stdio
+set MCP_MEMORY=python mcp-servers/mcp-server-memory.py --stdio
 
 rem MCP Workspace
 set WORKSPACE_PORT=48102
 set WORKSPACE_WORKSPACE_DIR=%WORK_PATH%\%GITEA_MAIN_REPO_NAME%
 set WORKSPACE_HIDE_DOT_DIRS=true
-set MCP_WORKSPACE=python mcp-server-workspace.py --stdio
+set MCP_WORKSPACE=python mcp-servers/mcp-server-workspace.py --stdio
 
 rem MCP Report
 set REPORT_PORT=48103
 set REPORT_WORKSPACE_DIR=%WORK_REPORT%
 set REPORT_HIDE_DOT_DIRS=true
-set MCP_REPORT=python mcp-server-workspace.py --stdio
+set MCP_REPORT=python mcp-servers/mcp-server-workspace.py --stdio
 
 set PROMPT_EXPERT_SYSTEM=%WORK_READ%\system.expert-full-stack-web-engineer.memory-workspace.md
 set PROMPT_EXPERT_BEGIN=%WORK_READ%\prompt.expert.begin.md

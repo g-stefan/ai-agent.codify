@@ -16,6 +16,7 @@ import urllib.request
 import ssl
 import itertools
 import socket
+import re
 from urllib.error import URLError, HTTPError
 from typing import Optional, Dict, Any, List, Tuple
 from contextlib import AsyncExitStack
@@ -340,32 +341,21 @@ async def chat_loop(
                         
                     if first_print_time is None:
                         first_print_time = time.time()
-                        
-                    if reasoning:
+                                            
+                    if reasoning:                        
                         sys.stdout.write(f"\033[95m{reasoning}\033[0m")
                         just_printed = True
+
+                    is_thinking = False
+                    if reasoning:
+                        is_thinking = True
                         
                     if content:
                         current_assistant_content += content
-                        
-                        starts = current_assistant_content.count("<think>")
-                        ends = current_assistant_content.count("</think>")
-                        is_thinking = starts > ends
-                        
-                        display_content = content
-                        if "<think>" in display_content:
-                            display_content = display_content.replace("<think>", "\033[95m<think>\n")
-                        
-                        if "</think>" in display_content:
-                            display_content = display_content.replace("</think>", "\n</think>\033[0m")
-                            
                         if is_thinking:
-                            if "<think>" in content:
-                                sys.stdout.write(f"{display_content}\033[0m")
-                            else:
-                                sys.stdout.write(f"\033[95m{display_content}\033[0m")
+                            sys.stdout.write(f"{content}\033[0m")                            
                         else:
-                            sys.stdout.write(display_content)
+                            sys.stdout.write(content)
                             
                         just_printed = True
                         
