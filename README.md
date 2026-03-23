@@ -33,3 +33,13 @@ The connection from the LLM Server to the Agent machine it's made over ssh using
 The MCP servers used for memory and workspace can be used by the agent but also in the llama-server ui interface, for test and other development.
 
 The project is under the Apache License, Version 2.0
+
+## Screenshots
+
+![issue-begin](docs/images/issue-01.png)
+
+![issue-after](docs/images/issue-02.png)
+
+![pull-request](docs/images/pull-request-01.png)
+
+![gitea-action](docs/images/gitea-action-01.png)
