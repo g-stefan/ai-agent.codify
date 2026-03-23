@@ -8,11 +8,12 @@ import sys
 import fnmatch
 import uvicorn
 import argparse
+import itertools
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from mcp.server.fastmcp import FastMCP
-from typing import List, Any
+from typing import List, Any, Optional
 from pathlib import Path
 
 # --- Pre-parse --env-base ---
@@ -44,6 +45,7 @@ PORT = int(get_env_var("PORT", "48102"))
 HIDE_DOT_DIRS = get_env_var("HIDE_DOT_DIRS", "true").lower() in ("true", "1", "yes")
 
 os.makedirs(WORKSPACE_DIR, exist_ok=True)
+
 
 # ---
 def get_safe_path(base_folder: str, user_path: str) -> Path:
@@ -83,14 +85,139 @@ def get_safe_path(base_folder: str, user_path: str) -> Path:
     return base_folder + "/" + user_path
 
 
+def apply_diff_text(original_text, diff_text):
+    """
+    Applies a standard unified diff to the original text and returns the modified result.
+    """
+    original_lines = original_text.splitlines()
+    diff_lines = diff_text.splitlines()
+
+    result_lines = []
+    orig_idx = 0  # Tracks our current line number in the original text (0-indexed)
+
+    i = 0
+    while i < len(diff_lines):
+        line = diff_lines[i]
+
+        # Skip the file header lines
+        if line.startswith("---") or line.startswith("+++"):
+            i += 1
+            continue
+
+        # Look for a hunk header, e.g., @@ -1,4 +1,5 @@
+        if line.startswith("@@"):
+            # Extract the starting line number for the original text
+            parts = line.split()
+            orig_info = parts[1]  # e.g., "-1,4"
+            orig_start = int(orig_info.split(",")[0].replace("-", ""))
+
+            # Catch up: Add any unmodified lines that appeared before this hunk
+            while orig_idx < orig_start - 1:
+                result_lines.append(original_lines[orig_idx])
+                orig_idx += 1
+
+            i += 1
+
+            # Process the lines inside this hunk
+            while i < len(diff_lines) and not diff_lines[i].startswith("@@"):
+                hunk_line = diff_lines[i]
+
+                # Safety check for next file headers if multiple files are in one diff
+                if hunk_line.startswith("---") or hunk_line.startswith("+++"):
+                    break
+
+                # Determine the action: space (context), - (deletion), or + (addition)
+                action = hunk_line[0] if len(hunk_line) > 0 else " "
+                content = hunk_line[1:]
+
+                if action == " ":
+                    # Context line: keep original
+                    if orig_idx < len(original_lines):
+                        result_lines.append(original_lines[orig_idx])
+                        orig_idx += 1
+                elif action == "-":
+                    # Deletion: skip this line in the original text
+                    orig_idx += 1
+                elif action == "+":
+                    # Addition: insert the new content
+                    result_lines.append(content)
+
+                i += 1
+            continue
+
+        i += 1
+
+    # Add any remaining lines from the original text that appeared after the last hunk
+    while orig_idx < len(original_lines):
+        result_lines.append(original_lines[orig_idx])
+        orig_idx += 1
+
+    return "\n".join(result_lines)
+
+
+def apply_diff_file(filename, diff_text):
+    """
+    Reads a file, applies a unified diff using apply_diff,
+    and writes the modified text back to the file.
+    """
+    with open(filename, "r", encoding="utf-8") as f:
+        original_text = f.read()
+
+    modified_text = apply_diff_text(original_text, diff_text)
+
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(modified_text)
+
+    return True
+
+
+def read_file_chunk(
+    file_path: str, offset: int = 0, max_lines: Optional[int] = None
+) -> str:
+    """
+    Reads a specific chunk of a file starting from a given line offset.
+
+    Args:
+        file_path (str): The path to the file to be read.
+        offset (int): The starting line number (0-indexed). Defaults to 0.
+        max_lines (int, optional): The maximum number of lines to read.
+                                   If None, reads to the end of the file.
+
+    Returns:
+        str: A single string containing the requested lines, ready for LLM input.
+    """
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"The file '{file_path}' was not found.")
+
+    if offset < 0:
+        raise ValueError("Offset must be a non-negative integer.")
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as file:
+            # Calculate where to stop reading
+            stop = offset + max_lines if max_lines is not None else None
+
+            # itertools.islice efficiently skips the first 'offset' lines
+            # without loading them into memory, then yields the next lines up to 'stop'
+            chunk_lines = itertools.islice(file, offset, stop)
+
+            # Join the lines into a single text block
+            return "".join(chunk_lines)
+
+    except UnicodeDecodeError:
+        raise ValueError(f"File '{file_path}' is not a valid UTF-8 text file.")
+    except Exception as e:
+        raise RuntimeError(f"An error occurred while reading the file: {e}")
+
+
 # ---
 
 mcp = FastMCP("Workspace", stateless_http=True, json_response=False)
 
 
 @mcp.tool()
-async def read_file_content_from_workspace(filename: str) -> str:
-    """Read file contents from workspace."""
+async def read_file_contents(filename: str) -> str:
+    """Read file contents."""
     text = ""
     try:
         filename = get_safe_path(WORKSPACE_DIR, filename)
@@ -106,8 +233,8 @@ async def read_file_content_from_workspace(filename: str) -> str:
 
 
 @mcp.tool()
-async def write_file_content_to_workspace(filename: str, text: str) -> str:
-    """Write file contents to workspace."""
+async def write_file_contents(filename: str, text: str) -> str:
+    """Write file contents."""
     basePath = WORKSPACE_DIR
     try:
         filename = get_safe_path(WORKSPACE_DIR, filename)
@@ -125,8 +252,8 @@ async def write_file_content_to_workspace(filename: str, text: str) -> str:
 
 
 @mcp.tool()
-async def list_files_on_workspace() -> List[str]:
-    """List files found on workspace."""
+async def list_files() -> List[str]:
+    """List files."""
     try:
         myPath = WORKSPACE_DIR
         if not os.path.exists(myPath):
@@ -155,8 +282,8 @@ async def list_files_on_workspace() -> List[str]:
 
 
 @mcp.tool()
-async def search_files_on_workspace_by_filename(pattern: str = "*") -> List[str]:
-    """Search files on workspace by filename pattern."""
+async def search_files(pattern: str = "*") -> List[str]:
+    """Search files by filename pattern."""
     try:
         myPath = WORKSPACE_DIR
         if not os.path.exists(myPath):
@@ -185,6 +312,154 @@ async def search_files_on_workspace_by_filename(pattern: str = "*") -> List[str]
     except Exception as e:
         return [f"Error: An unexpected system error occurred. {str(e)}"]
     return retV
+
+
+@mcp.tool()
+async def apply_diff(filename: str, text: str) -> str:
+    """Apply standard unified diff to file."""
+    try:
+        filename = get_safe_path(WORKSPACE_DIR, filename)
+        if not apply_diff_file(filename, text):
+            return "Error: unknown error. Diff not applied."
+    except FileNotFoundError:
+        return f"Error: File not found. The path '{filename}' does not exist."
+    except PermissionError as e:
+        return f"Error: Permission denied. {str(e)}"
+    except Exception as e:
+        return f"Error: An unexpected system error occurred. {str(e)}"
+    return "Diff applied successfully."
+
+
+@mcp.tool()
+async def read_file_lines(filename: str, offset: int, count: int = 2000) -> str:
+    """Read file content by count lines from line at offset."""
+    try:
+        filename = get_safe_path(WORKSPACE_DIR, filename)
+        return read_file_chunk(filename, offset, count)
+    except FileNotFoundError:
+        return f"Error: File not found. The path '{filename}' does not exist."
+    except PermissionError as e:
+        return f"Error: Permission denied. {str(e)}"
+    except Exception as e:
+        return f"Error: An unexpected system error occurred. {str(e)}"
+
+
+@mcp.tool()
+async def grep_files(pattern: str, file_pattern: str = "*") -> List[str]:
+    """
+    Search the contents of files for a given text or regex pattern.
+    Returns a list of relative file paths that contain the pattern.
+
+    Args:
+        pattern: The text or regular expression to search for inside files.
+        file_pattern: Optional glob pattern to filter which files to read (e.g., "*.py"). Default is "*".
+    """
+    try:
+        myPath = WORKSPACE_DIR
+        if not os.path.exists(myPath):
+            raise FileNotFoundError(f"Workspace directory '{myPath}' does not exist.")
+
+        # Attempt to compile the pattern as a regex.
+        # If it's an invalid regex (e.g., "*foo*"), fallback to literal text matching.
+        try:
+            search_regex = re.compile(pattern)
+            is_regex = True
+        except re.error:
+            is_regex = False
+
+        retV = []
+        for dirpath, dirnames, filenames in os.walk(myPath):
+            if HIDE_DOT_DIRS:
+                # Modify dirnames in-place to prevent os.walk from entering dot directories
+                dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+
+            for f in filenames:
+                # Check if the filename matches the optional file_pattern
+                if file_pattern != "*" and not fnmatch.fnmatch(f, file_pattern):
+                    continue
+
+                full_path = os.path.join(dirpath, f)
+
+                # Normalize path and get relative path, same as search_files
+                lineX = re.sub(r"[\\]", "/", full_path)
+                rel_path = lineX[len(str(myPath)) + 1 :]
+
+                try:
+                    # Open and read file line by line to keep memory usage low
+                    with open(full_path, "r", encoding="utf-8") as file:
+                        for line in file:
+                            match_found = False
+
+                            if is_regex:
+                                if search_regex.search(line):
+                                    match_found = True
+                            else:
+                                if pattern in line:
+                                    match_found = True
+
+                            if match_found:
+                                retV.append(rel_path)
+                                break  # We found a match, no need to read the rest of this file
+
+                except UnicodeDecodeError:
+                    # Gracefully skip binary files or files with unsupported encodings
+                    continue
+                except PermissionError:
+                    # Skip files we don't have permission to read
+                    continue
+
+    except FileNotFoundError as e:
+        return [f"Error: {str(e)}"]
+    except PermissionError as e:
+        return [f"Error: Permission denied. {str(e)}"]
+    except Exception as e:
+        return [f"Error: An unexpected system error occurred. {str(e)}"]
+
+    return retV
+
+
+@mcp.tool()
+async def replace_text_in_file(filename: str, text: str, new_text: str) -> str:
+    """Replace specific occurrences of text in a file with new text."""
+    basePath = WORKSPACE_DIR
+    try:
+        # Resolve the safe path
+        safe_filename = get_safe_path(WORKSPACE_DIR, filename)
+
+        # Ensure the file actually exists before reading
+        if not Path(safe_filename).is_file():
+            return f"Error: The file '{filename}' does not exist."
+
+        # Read the current contents of the file
+        with open(safe_filename, "r", encoding="utf8") as f:
+            content = f.read()
+
+        # Check if the text to replace actually exists in the file
+        if text not in content:
+            return f"Warning: The exact text to replace was not found in '{filename}'. No changes made."
+
+        # Count occurrences for the success message
+        occurrences = content.count(text)
+
+        # Replace the text
+        new_content = content.replace(text, new_text)
+
+        # Write the updated contents back to the file
+        with open(safe_filename, "w", encoding="utf8") as f:
+            f.write(new_content)
+
+    except FileNotFoundError:
+        return f"Error: The system cannot find the path specified for '{filename}'."
+    except PermissionError as e:
+        return f"Error: Permission denied. {str(e)}"
+    except Exception as e:
+        return f"Error: An unexpected system error occurred. {str(e)}"
+
+    # Format the relative file path for the return message
+    filenameX = str(safe_filename)[len(str(basePath)) + 1 :]
+    return (
+        f"Successfully replaced {occurrences} occurrence(s) of text in '{filenameX}'."
+    )
 
 
 class APIKeyAuthMiddleware(BaseHTTPMiddleware):

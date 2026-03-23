@@ -182,6 +182,7 @@ async def chat_loop(
         spinner_active = False
 
         buffer = ""
+        last_state = None  # Tracks the last data frame type ("content", "thinking", "tool_call")
 
         while True:
             try:
@@ -306,6 +307,14 @@ async def chat_loop(
                 reasoning = delta.get("reasoning_content", "")
                 content = delta.get("content", "")
                 
+                # Update the last recorded state based on current delta contents
+                if reasoning:
+                    last_state = "thinking"
+                if content:
+                    last_state = "content"
+                if delta.get("tool_calls"):
+                    last_state = "tool_call"
+                
                 just_printed = False
                 
                 if reasoning or content:
@@ -365,6 +374,11 @@ async def chat_loop(
 
         # End of stream block. Print a newline to separate streamed text from stats or tool executions.
         print("\n", file=sys.stderr)
+        
+        # New Check: Exit with error 1 if generation gracefully completed but was still in the "thinking" state.
+        if finish_reason == "stop" and last_state == "thinking":
+            print("\033[91m[!] Error: Model stopped processing in thinking state\033[0m", file=sys.stderr)
+            sys.exit(1)
         
         if final_usage:
             predicted_n = final_usage.get("completion_tokens", 0)
