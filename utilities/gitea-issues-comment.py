@@ -89,9 +89,9 @@ def main():
         print("Error: Invalid issue JSON format. Missing 'url' attribute.")
         sys.exit(1)
         
-    work_comment = work_data.get("comment")
+    work_comment = work_data.get("body")
     if work_comment is None: 
-        print("Error: Invalid work JSON format. Missing 'comment' attribute.")
+        print("Error: Invalid work JSON format. Missing 'body' attribute.")
         sys.exit(1)
         
     # Check if the comment is empty (handles empty strings, whitespace-only, empty lists/dicts)

@@ -59,24 +59,24 @@
     "required": false
   },
   {
-    "tag": "agent-prepare-prompt",
+    "tag": "agent-prepare-prompt.expert",
     "command": [
       "python",
-      "agent/agent-prepare-prompt.py"
+      "agent/agent-prepare-prompt.expert.py"
     ]
   },
   {
-    "tag": "agent-llm-cli",
+    "tag": "agent-llm-cli.expert",
     "command": [
       "python",
       "agent/agent-llm-cli.py",
-      "$PROMPT_FILENAME",
+      "$PROMPT_EXPERT_FILENAME",
       "--temp",
       "0.7",
       "--session",
-      "$PROMPT_SESSION",
+      "$PROMPT_EXPERT_SESSION",
       "--system",
-      "$PROMPT_SYSTEM",
+      "$PROMPT_EXPERT_SYSTEM",
       "--url",
       "$LLM_SERVER",
       "--mcp",
@@ -93,6 +93,41 @@
     ]
   },
   {
+    "tag": "agent-prepare-prompt.report",
+    "command": [
+      "python",
+      "agent/agent-prepare-prompt.report.py"
+    ]
+  },
+  {
+    "tag": "agent-llm-cli.report",
+    "command": [
+      "python",
+      "agent/agent-llm-cli.py",
+      "$PROMPT_REPORT_FILENAME",
+      "--temp",
+      "0.7",
+      "--system",
+      "$PROMPT_REPORT_SYSTEM",
+      "--url",
+      "$LLM_SERVER",
+      "--mcp",
+      "$MCP_REPORT",
+      "--mcp-env-base",
+      "REPORT",
+      "--no-spinner"
+    ]
+  },
+  {
+    "tag": "agent-report-to-json",
+    "command": [
+      "python",
+      "agent/agent-report-to-json.py",
+      "$PROMPT_REPORT_OUTPUT",
+      "$PROMPT_REPORT_JSON"
+    ]
+  },
+  {
     "tag": "agent-work-to-json.py",
     "command": [
       "python",
@@ -104,6 +139,19 @@
     "command": [
       "python",
       "utilities/git-push.py"
+    ]
+  },
+  {
+    "tag": " gitea-issues-comment",
+    "command": [
+      "python",
+      "utilities/gitea-issues-comment.py",
+      "--issue",
+      "$ISSUE_FILENAME",
+      "--work",
+      "$WORK_REPORT_FILENAME",
+      "--token",
+      "$GITEA_TOKEN"
     ]
   },
   {
@@ -126,18 +174,5 @@
       "--token",
       "$GITEA_TOKEN"
     ]
-  },
-  {
-    "tag": " gitea-issues-comment",
-    "command": [
-      "python",
-      "utilities/gitea-issues-comment.py",
-      "--issue",
-      "$ISSUE_FILENAME",
-      "--work",
-      "$WORK_REPORT_FILENAME",
-      "--token",
-      "$GITEA_TOKEN"
-    ]
-  }  
+  }
 ]

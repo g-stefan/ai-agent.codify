@@ -38,8 +38,6 @@ The project is under the Apache License, Version 2.0
 
 ![issue-begin](docs/images/issue-01.png)
 
-![issue-after](docs/images/issue-02.png)
-
 ![pull-request](docs/images/pull-request-01.png)
 
 ![gitea-action](docs/images/gitea-action-01.png)

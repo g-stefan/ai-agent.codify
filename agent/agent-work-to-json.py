@@ -6,24 +6,23 @@ import json
 import sys
 import os
 
-PROMPT_EXPERT_SESSION = os.getenv("PROMPT_EXPERT_SESSION", "session.json")
-PROMPT_REPORT_JSON = os.getenv("PROMPT_REPORT_JSON", "report.json")
+ISSUE_FILENAME = os.getenv("ISSUE_FILENAME", "issue.json")
+PROMPT_SESSION = os.getenv("PROMPT_SESSION", "session.json")
 WORK_REPORT_FILENAME =  os.getenv("WORK_REPORT_FILENAME", "work.json")
 
 try:
-    with open(PROMPT_EXPERT_SESSION, "r", encoding="utf8") as f:
-        sessionContent = json.load(f)
+    with open(ISSUE_FILENAME, "r", encoding="utf8") as f:
+        issueContent = json.load(f)
 except Exception as e:
-    print(f"Error reading/parsing file {PROMPT_EXPERT_SESSION}: {e}", file=sys.stderr)
+    print(f"Error reading/parsing file {ISSUE_FILENAME}: {e}", file=sys.stderr)
     sys.exit(1)
 
 try:
-    with open(PROMPT_REPORT_JSON, "r", encoding="utf8") as f:
-        promptReport = json.load(f)
+    with open(PROMPT_SESSION, "r", encoding="utf8") as f:
+        sessionContent = json.load(f)
 except Exception as e:
-    print(f"Error reading/parsing file {PROMPT_REPORT_JSON}: {e}", file=sys.stderr)
+    print(f"Error reading/parsing file {PROMPT_SESSION}: {e}", file=sys.stderr)
     sys.exit(1)
-
 
 body = ""
 for info in sessionContent:
@@ -34,8 +33,7 @@ for info in sessionContent:
             body += "\r\n"
 
 data = {
-    "title": promptReport.get("title", ""),
-    "comment": promptReport.get("body", ""),
+    "title": issueContent[0].get("title", ""),    
     "body": body
 }
 

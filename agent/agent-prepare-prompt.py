@@ -8,25 +8,25 @@ import argparse
 import sys
 import os
 
-PROMPT_EXPERT_BEGIN = os.getenv("PROMPT_EXPERT_BEGIN", "prompt.begin.md")
-PROMPT_EXPERT_END = os.getenv("PROMPT_EXPERT_END", "prompt.end.md")
-PROMPT_EXPERT_FILENAME = os.getenv("PROMPT_EXPERT_FILENAME", "prompt.md")
+PROMPT_BEGIN = os.getenv("PROMPT_BEGIN", "prompt.begin.md")
+PROMPT_END = os.getenv("PROMPT_END", "prompt.end.md")
+PROMPT_FILENAME = os.getenv("PROMPT_FILENAME", "prompt.md")
 ISSUE_FILENAME = os.getenv("ISSUE_FILENAME", "issue.json")
 WORK_WRITE = os.getenv("WORK_WRITE", "work.write")
 GITEA_TOKEN = os.getenv("GITEA_TOKEN") # Retrieve the Gitea token
 
 try:
-    with open(PROMPT_EXPERT_BEGIN, "r", encoding="utf8") as f:
+    with open(PROMPT_BEGIN, "r", encoding="utf8") as f:
         promptBegin = f.read()
 except Exception as e:
-    print(f"Error reading file {PROMPT_EXPERT_BEGIN}: {e}", file=sys.stderr)
+    print(f"Error reading file {PROMPT_BEGIN}: {e}", file=sys.stderr)
     sys.exit(1)
 
 try:
-    with open(PROMPT_EXPERT_END, "r", encoding="utf8") as f:
+    with open(PROMPT_END, "r", encoding="utf8") as f:
         promptEnd = f.read()
 except Exception as e:
-    print(f"Error reading file {PROMPT_EXPERT_END}: {e}", file=sys.stderr)
+    print(f"Error reading file {PROMPT_END}: {e}", file=sys.stderr)
     sys.exit(1)
 
 try:
@@ -54,10 +54,10 @@ for comment in issueComments:
 content += promptEnd
 
 try:
-    with open(PROMPT_EXPERT_FILENAME, "w", encoding="utf8") as f:
+    with open(PROMPT_FILENAME, "w", encoding="utf8") as f:
         f.write(content)
 except Exception as e:
-    print(f"Error writing file {PROMPT_EXPERT_FILENAME}: {e}", file=sys.stderr)
+    print(f"Error writing file {PROMPT_FILENAME}: {e}", file=sys.stderr)
     sys.exit(1)
 
 # Collect all assets
