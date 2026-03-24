@@ -108,7 +108,8 @@ async def chat_loop(
     insecure: bool = False,
     timeout: int = 360,
     debug_file: Optional[str] = None,
-    no_spinner: bool = False
+    no_spinner: bool = False,
+    output_file: Optional[str] = None
 ) -> None:
     """
     Handles the chat loop, streaming text, detecting tool calls, executing them via MCP, and continuing.
@@ -375,6 +376,14 @@ async def chat_loop(
         # End of stream block. Print a newline to separate streamed text from stats or tool executions.
         print("\n", file=sys.stderr)
         
+        # Save output data frame to file if requested
+        if output_file and current_assistant_content:
+            try:
+                with open(output_file, "a", encoding="utf-8") as f:
+                    f.write(current_assistant_content)
+            except Exception as e:
+                print(f"\033[93m[!] Warning: Failed to write to output file: {e}\033[0m", file=sys.stderr)
+        
         # New Check: Exit with error 1 if generation gracefully completed but was still in the "thinking" state.
         if finish_reason == "stop" and last_state == "thinking":
             print("\033[91m[!] Error: Model stopped processing in thinking state\033[0m", file=sys.stderr)
@@ -605,12 +614,22 @@ async def async_main():
     parser.add_argument("--prompt-timeout", type=int, default=360, help="Maximum overall time in seconds allowed for the generation, thinking, and tool execution (default: 360). Returns an error if exceeded.")
     parser.add_argument("--debug", type=str, default=None, help="Path to a JSONL file to log API requests and responses for debugging.")
     parser.add_argument("--no-spinner", action="store_true", help="Disable the thinking and working spinner animation on the console.")
+    parser.add_argument("-o", "--output", type=str, default=None, help="Path to a file to save only the final text output (no thinking/tool call).")
 
     args = parser.parse_args()
 
     # Ensure at least some form of input was provided
     if not any([args.input, args.prompt, args.session, args.images, args.assets]):
         parser.error("You must provide at least one input source: a file, a prompt string (-p), images, assets, or a session.")
+
+    # Truncate/initialize output file if specified
+    if args.output:
+        try:
+            with open(args.output, "w", encoding="utf-8") as f:
+                pass
+        except Exception as e:
+            print(f"\033[91m[!] Error creating output file '{args.output}': {e}\033[0m", file=sys.stderr)
+            sys.exit(1)
 
     if args.insecure:
         # Globally disable SSL verification for standard library functions (helps with external module connections)
@@ -874,7 +893,8 @@ async def async_main():
                 insecure=args.insecure,
                 timeout=args.timeout,
                 debug_file=args.debug,
-                no_spinner=args.no_spinner
+                no_spinner=args.no_spinner,
+                output_file=args.output
             )
             
             if args.prompt_timeout and args.prompt_timeout > 0:
