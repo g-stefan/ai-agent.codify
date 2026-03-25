@@ -1,0 +1,20 @@
+[
+  {
+    "tag": "clean-up-working-folders",
+    "command": [
+      "python",
+      "utilities/folders-clean-up.py"
+    ]
+  },
+  {
+    "tag": "agent-start-pipeline",
+    "command": [
+      "python",
+      "utilities/gitea-env-wrapper.py",
+      "python",
+      "agent/agent-run.py",
+      "--config",
+      "work.read/agent-pipeline.gemini.json"
+    ]
+  }
+]

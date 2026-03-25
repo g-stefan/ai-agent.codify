@@ -1,0 +1,46 @@
+[
+  {
+    "tag": "agent-pipeline",
+    "command": [
+      "python",
+      "agent/agent-run.py",
+      "--config",
+      "work.read/agent-run.gemini.json"
+    ],
+    "env" : {
+        "GITEA_INSTANCE":"$CODIFY_GITEA_INSTANCE",
+        "GITEA_TOKEN":"$GITEA_TOKEN",
+        "GITEA_MAIN_REPO_OWNER":"$GITEA_MAIN_REPO_OWNER",
+        "GITEA_MAIN_REPO_NAME":"$GITEA_MAIN_REPO_NAME",
+        "GITEA_MAIN_HEAD":"$GITHUB_REF_NAME",
+        "GITEA_WORK_REPO_OWNER":"$CODIFY_REPO_OWNER",
+        "ISSUE_FILENAME":"work.write/issue.json",
+        "WORK_PATH":"$CODIFY_WORK_PATH",
+        "WORK_READ":"work.read",
+        "WORK_WRITE":"work.write",
+        "LLM_SERVER":"https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        "LLM_MODEL":"gemini-3.1-pro-preview",
+        "LLM_API_KEY":"$GEMINI_API_KEY",
+        "MEMORY_DB_HOST":"127.0.0.1",
+        "MEMORY_DB_PORT":"3306",
+        "MEMORY_DB_USER":"root",
+        "MEMORY_DB_PASS":"",
+        "MEMORY_DB_NAME":"agent",
+        "MEMORY_DB_TABLE":"embeddings",
+        "MEMORY_LLAMA_EMBED_URL":"http://127.0.0.1:48002/embeddings",        
+        "MEMORY_DB_SEARCH_LIMIT":"3",        
+        "MEMORY_MEMORY_DIR":"memory",
+        "MEMORY_WORKSPACE_DIR":"$WORK_PATH/$GITEA_MAIN_REPO_NAME",
+        "MCP_MEMORY":"python mcp-servers/mcp-server-memory.py --stdio",
+        "WORKSPACE_DIR":"$WORK_PATH/$GITEA_MAIN_REPO_NAME",
+        "WORKSPACE_HIDE_DOT_DIRS":"true",
+        "MCP_WORKSPACE":"python mcp-servers/mcp-server-workspace.py --stdio",
+        "PROMPT_SYSTEM":"$WORK_READ/system.full-stack-web-engineer.memory-workspace.md",
+        "PROMPT_BEGIN":"$WORK_READ/prompt.begin.md",
+        "PROMPT_END":"$WORK_READ/prompt.end.md",
+        "PROMPT_FILENAME":"$WORK_WRITE/prompt.md",
+        "PROMPT_SESSION":"$WORK_WRITE/prompt.session.json",
+        "WORK_REPORT_FILENAME":"$WORK_WRITE/work.json"
+    }
+  }
+]
