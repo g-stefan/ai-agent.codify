@@ -6,6 +6,8 @@ import os
 import sys
 import json
 import uuid
+import base64
+import shutil
 import argparse
 import urllib.request
 from typing import List, Dict, Any
@@ -15,7 +17,8 @@ import uvicorn
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Image
+from mcp.types import ContentBlock, TextContent, ImageContent
 
 try:
     import mariadb
@@ -25,14 +28,16 @@ except ImportError:
         file=sys.stderr,
     )
 
-# --- Pre-parse --env-base ---
+# --- Pre-parse --env-base and --read-only ---
 # We use a separate parser that ignores unknown args to grab the env-base prefix early,
 # because we need it to resolve our module-level configuration variables below.
 pre_parser = argparse.ArgumentParser(add_help=False)
 pre_parser.add_argument("--env-base", type=str, default="")
+pre_parser.add_argument("--read-only", action="store_true")
 pre_args, _ = pre_parser.parse_known_args()
 
 ENV_PREFIX = pre_args.env_base
+READ_ONLY = pre_args.read_only
 
 
 def get_env_var(name: str, default: Any = None) -> Any:
@@ -60,25 +65,58 @@ DB_TABLE = get_env_var("DB_TABLE", "embeddings")
 DB_SEARCH_LIMIT = int(get_env_var("DB_SEARCH_LIMIT", 8))
 
 LLAMA_EMBED_URL = get_env_var("LLAMA_EMBED_URL", "http://127.0.0.1:8080/embeddings")
-LLAMA_RERANK_URL = get_env_var("LLAMA_RERANK_URL", "http://127.0.0.1:8080/v1/rerank")
-
-# Environment Variable to toggle reranking (defaults to True for backward compatibility)
-ENABLE_RERANKING = get_env_var("ENABLE_RERANKING", "true").lower() in (
-    "true",
-    "1",
-    "yes",
-    "on",
-)
 
 MEMORY_DIR = get_env_var("MEMORY_DIR", "Memory")
 os.makedirs(MEMORY_DIR, exist_ok=True)
 
+WORKSPACE_DIR = get_env_var("WORKSPACE_DIR", "Workspace")
+os.makedirs(WORKSPACE_DIR, exist_ok=True)
+
 # --- Helper Functions ---
 
+DB_TYPE_UNKNOWN = 0
+DB_TYPE_TEXT = 1
+DB_TYPE_IMAGE = 2
 
-def get_embedding(text: str) -> List[float]:
-    """Fetch embedding vector for a given text from the Llama Server."""
-    payload = {"content": [{"prompt_string": text, "multimodal_data": []}]}
+
+def read_file_content_and_type(
+    filepath: str, binary: bool = False
+) -> tuple[str, bool, str]:
+    """Helper to read file content and determine if it should be treated as an image."""
+    ext = os.path.splitext(filepath)[1].lower()
+    is_image = ext in [".png", ".jpeg", ".jpg"]
+
+    if is_image:
+        imageFormat = "jpeg" if ext in [".jpeg", ".jpg"] else "png"
+        if binary:
+            with open(filepath, "rb") as f:
+                data = f.read()
+                return data, True, imageFormat
+
+        with open(filepath, "rb") as f:
+            b64_data = base64.b64encode(f.read()).decode("utf-8")
+            return b64_data, True, imageFormat
+    else:
+        # Treat other files as text
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            return f.read(), False, ""
+
+
+def get_embedding(text_or_image_url: str, is_image: bool = False) -> List[float]:
+    """Fetch embedding vector for a given text or image from the Llama Server."""
+    if is_image:
+        # Structure for multimodal data containing an image
+        payload = {
+            "content": [
+                {"prompt_string": "<__media__>", "multimodal_data": [text_or_image_url]}
+            ]
+        }
+    else:
+        # Standard text structure
+        payload = {
+            "content": [{"prompt_string": text_or_image_url, "multimodal_data": []}]
+        }
+
     req = urllib.request.Request(
         LLAMA_EMBED_URL, data=json.dumps(payload).encode("utf-8"), method="POST"
     )
@@ -87,7 +125,7 @@ def get_embedding(text: str) -> List[float]:
     with urllib.request.urlopen(req) as response:
         result = json.loads(response.read().decode("utf-8"))
 
-        # Match standard openai or direct list response (like in agent-cli-embeddings.py)
+        # Match standard openai or direct list response
         if isinstance(result, dict) and "data" in result:
             return result["data"][0]["embedding"]
         elif isinstance(result, list):
@@ -109,15 +147,18 @@ def get_db_connection():
     return mariadb.connect(**kwargs)
 
 
-def save_embedding_to_db(doc_name: str, embedding: List[float]):
+def save_embedding_to_db(doc_name: str, embedding: List[float], is_image: bool):
     """Insert the document filename, its embedding, and creation date into MariaDB."""
     conn = get_db_connection()
     try:
         cur = conn.cursor()
         emb_str = json.dumps(embedding)
         # Using NOW() to automatically stamp the memory creation time based on the DB server
-        query = f"INSERT INTO `{DB_TABLE}` (created_at, document, embedding) VALUES (NOW(), ?, VEC_FromText(?))"
-        cur.execute(query, (doc_name, emb_str))
+        recordType = DB_TYPE_TEXT
+        if is_image:
+            recordType = DB_TYPE_IMAGE
+        query = f"INSERT INTO `{DB_TABLE}` (created_at, document, type, embedding) VALUES (NOW(), ?, ?, VEC_FromText(?))"
+        cur.execute(query, (doc_name, recordType, emb_str))
         conn.commit()
     finally:
         if "conn" in locals() and conn.open:
@@ -132,149 +173,171 @@ def search_db(
     try:
         cur = conn.cursor()
         emb_str = json.dumps(embedding)
-        # Modified to select both document and created_at fields
+        # Only higher similarity (e.g., < 0.1 is roughly a 90% match), 
         query = f"""
-            SELECT document, created_at
-            FROM `{DB_TABLE}`
-            ORDER BY VEC_DISTANCE_COSINE(embedding, VEC_FromText(?))
+            SELECT document, created_at, VEC_DISTANCE_COSINE(embedding, VEC_FromText(?)) as distance
+            FROM `{DB_TABLE}`            
+            ORDER BY distance ASC
             LIMIT ?
         """
         cur.execute(query, (emb_str, limit))
-        results = [{"document": row[0], "created_at": row[1]} for row in cur]
+        # Filter similarity (e.g., < 0.6 is roughly a 40% match), 
+        results = []        
+        for row in cur:            
+            if row[2] < 0.6:
+                results.append({"document": row[0], "created_at": row[1]})
         return results
     finally:
         if "conn" in locals() and conn.open:
             conn.close()
 
 
-def rerank(query: str, documents: List[str], memory_search_limit: int = 4) -> List[str]:
-    """Rerank a list of documents against a query using the Llama Server."""
-    if not documents:
+def recall_by_embedding(emb: List[float], memories_limit: int = 3) -> List[Any]:
+    # 1. Vector Search DB for top matches
+    db_matches = search_db(emb, limit=memories_limit)
+
+    if not db_matches:
         return []
-    if len(documents) <= 1:
-        return documents
 
-    payload = {"query": query, "documents": documents}
-    req = urllib.request.Request(
-        LLAMA_RERANK_URL,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req) as response:
-        response_data = json.loads(response.read().decode("utf-8"))
+    # 2. Read matched documents
+    documents = []
+    for match in db_matches:
+        fname = match["document"]
+        filepath = os.path.join(MEMORY_DIR, fname)
 
-    # Extract highest scoring document indices
-    if isinstance(response_data, list):
-        scored = sorted(enumerate(response_data), key=lambda x: x[1], reverse=True)
-        top_indices = [idx for idx, score in scored[:memory_search_limit]]
-    elif isinstance(response_data, dict) and "results" in response_data:
-        results = response_data["results"]
-        top_indices = [res.get("index", 0) for res in results[:memory_search_limit]]
-    elif isinstance(response_data, dict) and "scores" in response_data:
-        scores = response_data["scores"]
-        scored = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
-        top_indices = [idx for idx, score in scored[:memory_search_limit]]
-    else:
-        top_indices = [0]
+        if os.path.exists(filepath):
+            ext = os.path.splitext(filepath)[1].lower()
+            is_image = ext in [".png", ".jpeg", ".jpg"]
+            if is_image:
+                content, is_image, imageFormat = read_file_content_and_type(
+                    filepath, True
+                )
+                b64_data = base64.b64encode(content).decode("utf-8")
+                documents.append(
+                    ImageContent(
+                        type="image",
+                        data=b64_data,
+                        mimeType=f"image/{imageFormat.lower()}",
+                    )
+                )
+            else:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    content = f.read()
 
-    return [documents[i] for i in top_indices if i < len(documents)]
+                    documents.append(TextContent(type="text", text=content))
+
+    return documents
 
 
 # --- MCP Tools ---
 
+# Only register write functionality if not in read-only mode
+if not READ_ONLY:
+
+    @mcp.tool()
+    async def remember(info: str) -> str:
+        """Remember, save a information or text or fact to memory."""
+        try:
+            doc_id = str(uuid.uuid4())
+            filename = f"{doc_id}.txt"
+            filepath = os.path.join(MEMORY_DIR, filename)
+
+            # 1. Save content to Workspace Folder (Memory Directory)
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(info)
+
+            # 2. Fetch Embeddings
+            emb = get_embedding(info)
+
+            # 3. Save to MariaDB
+            save_embedding_to_db(filename, emb, False)
+
+            return f"Memory successfully saved (ID: {doc_id})."
+        except Exception as e:
+            return f"Error saving memory: {str(e)}"
+
+    @mcp.tool()
+    async def remember_file(filename: str) -> str:
+        """Remember, save an existing file (text or image) from the workspace folder to memory."""
+        try:
+            original_filepath = os.path.join(WORKSPACE_DIR, filename)
+            if not os.path.exists(original_filepath):
+                return f"Error: File '{filename}' not found in workspace ({WORKSPACE_DIR})."
+
+            # Generate new GUID-based filename
+            doc_id = str(uuid.uuid4())
+            _, ext = os.path.splitext(filename)
+            new_filename = f"{doc_id}{ext}"
+            new_filepath = os.path.join(MEMORY_DIR, new_filename)
+
+            # Read content and fetch embeddings
+            content, is_image, imageFormat = read_file_content_and_type(
+                original_filepath
+            )
+            emb = get_embedding(content, is_image=is_image)
+
+            # Copy the file to the memory directory with the new name
+            shutil.copy2(original_filepath, new_filepath)
+
+            # Save to MariaDB with the new filename
+            save_embedding_to_db(new_filename, emb, is_image)
+
+            return (
+                f"File '{filename}' successfully saved to memory as '{new_filename}'."
+            )
+        except Exception as e:
+            return f"Error saving file to memory: {str(e)}"
+
 
 @mcp.tool()
-async def remember(info: str) -> str:
-    """Remember, save a information a text or fact to memory."""
-    try:
-        doc_id = str(uuid.uuid4())
-        filename = f"{doc_id}.txt"
-        filepath = os.path.join(MEMORY_DIR, filename)
-
-        # 1. Save content to Workspace Folder
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(info)
-
-        # 2. Fetch Embeddings
-        emb = get_embedding(info)
-
-        # 3. Save to MariaDB
-        save_embedding_to_db(filename, emb)
-
-        return f"Memory successfully saved (ID: {doc_id})."
-    except Exception as e:
-        return f"Error saving memory: {str(e)}"
-
-
-@mcp.tool()
-async def remember_response(question: str, response: str) -> str:
-    """Remember response, save a question and its corresponding response to memory."""
-    text = f"Q: {question}\nA: {response}"
-    return await remember(text)
-
-
-@mcp.tool()
-async def recall(question: str, memories_limit: int = 4) -> str:
+async def recall(text_or_image_description: str, memories_limit: int = 3) -> List[Any]:
     """
-    Recall information from memory based on a text or query .
-    Use the 'memories_limit' parameter to specify the maximum number of relevant memories to return (default is 4).
+    Recall information from memory based on a text or a image description.
+    Use the 'memories_limit' parameter to specify the maximum number of relevant memories to return (default is 3).
+    If the user want to search using an image, use this with the image description
     """
     try:
-        # 1. Generate query embedding
-        emb = get_embedding(question)
-
-        # 2. Vector Search DB for top matches
-        # If reranking is enabled, fetch more candidates so reranking has options
-        search_limit = (
-            max(DB_SEARCH_LIMIT, memories_limit * 2)
-            if ENABLE_RERANKING
-            else memories_limit
-        )
-        db_matches = search_db(emb, limit=search_limit)
-
-        if not db_matches:
-            return "No relevant memories found in the database."
-
-        # 3. Read matched documents from filesystem and append creation date
-        documents = []
-        for match in db_matches:
-            fname = match["document"]
-            created_at = match["created_at"]
-            filepath = os.path.join(MEMORY_DIR, fname)
-
-            if os.path.exists(filepath):
-                with open(filepath, "r", encoding="utf-8") as f:
-                    content = f.read()
-
-                    # Format the content to include the creation date for the LLM context
-                    date_str = "Unknown Date"
-                    if created_at:
-                        if hasattr(created_at, "strftime"):
-                            date_str = created_at.strftime("%Y-%m-%d %H:%M:%S")
-                        else:
-                            date_str = str(created_at)
-
-                    doc_with_date = f"Creation Date: {date_str}\n{content}"
-                    documents.append(doc_with_date)
-
+        emb = get_embedding(text_or_image_description)
+        documents = recall_by_embedding(emb, memories_limit)
         if not documents:
-            return "Memory documents found in DB but missing from filesystem."
+            return [
+                TextContent(
+                    type="text",
+                    text="No memory found",
+                )
+            ]
 
-        # 4. Conditionally Rerank the gathered context
-        if ENABLE_RERANKING:
-            best_matches = rerank(question, documents, memories_limit)
-        else:
-            # If skipping rerank, just take the top vector matches up to the memories_limit
-            best_matches = documents[:memories_limit]
-
-        # 5. Format the results
-        formatted_results = "\n\n---\n\n".join(
-            [f"Memory {i+1}:\n{doc}" for i, doc in enumerate(best_matches)]
-        )
-        return f"Top {len(best_matches)} relevant memories:\n\n{formatted_results}"
-
+        return documents[:memories_limit]
     except Exception as e:
-        return f"Error recalling memory: {str(e)}"
+        return [TextContent(type="text", text=f"Error recalling memory: {str(e)}")]
+
+@mcp.tool()
+async def recall_by_file(filename: str, memories_limit: int = 3) -> List[Any]:
+    """
+    Recall files from memory based on a text or image file contents located in the workspace folder.
+    Use the 'memories_limit' parameter to specify the maximum number of relevant memories to return (default is 3).
+    """
+    try:
+        filepath = os.path.join(WORKSPACE_DIR, filename)
+        if not os.path.exists(filepath):
+            return [f"Error: File '{filename}' not found in workspace."]
+
+        content, is_image, imageFormat = read_file_content_and_type(filepath)
+
+        # Get embedding for the file
+        emb = get_embedding(content, is_image=is_image)
+
+        documents = recall_by_embedding(emb, memories_limit)
+        if not documents:
+            return [
+                TextContent(
+                    type="text",
+                    text="No memory found",
+                )
+            ]
+        return documents[:memories_limit]
+    except Exception as e:
+        return [f"Error recalling by file: {str(e)}"]
 
 
 # --- Authentication Middleware ---
@@ -330,6 +393,11 @@ if __name__ == "__main__":
         default="",
         help="Prefix for environment variables (e.g. 'PREFIX' checks for 'PREFIX_VARIABLE')",
     )
+    parser.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Disable write functionality (only recall functions will be active)",
+    )
     args = parser.parse_args()
 
     # Note: When using stdio mode, standard out must be clean for JSON-RPC messages.
@@ -341,10 +409,11 @@ if __name__ == "__main__":
             file=sys.stderr,
         )
 
-    print(
-        f"Reranking is currently {'ENABLED' if ENABLE_RERANKING else 'DISABLED'}",
-        file=sys.stderr,
-    )
+    if READ_ONLY:
+        print(
+            "Server is running in READ-ONLY mode (write tools disabled).",
+            file=sys.stderr,
+        )
 
     if args.stdio:
         print("Starting Memory MCP Server in STDIO mode...", file=sys.stderr)

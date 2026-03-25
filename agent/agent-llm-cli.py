@@ -530,22 +530,43 @@ async def chat_loop(
                     
                     if session:
                         result = await session.call_tool(name, arguments=args_dict)
-                        # Extract text contents from the MCP result
-                        text_results = [c.text for c in result.content if c.type == "text"]
-                        result_str = "\n".join(text_results)
+                        
+                        tool_content_list = []
+                        text_snippets = []
+                        
+                        # Process returned tool components for Text and Images
+                        for c in result.content:
+                            if c.type == "text":
+                                tool_content_list.append({"type": "text", "text": c.text})
+                                text_snippets.append(c.text)
+                            elif c.type == "image":
+                                img_url = f"data:{c.mimeType};base64,{c.data}"
+                                tool_content_list.append({"type": "image_url", "image_url": {"url": img_url}})
+                                text_snippets.append(f"[Image: {c.mimeType}]")
+                        
+                        result_str = "\n".join(text_snippets)
                         print(f"\033[92m[+] Tool result snippet: {result_str[:150]}...\033[0m", file=sys.stderr)
+                        
+                        # If the tool result contains an image, we send an array of parts back.
+                        # Otherwise, we join the text snippets as a string for broader API compatibility.
+                        has_image = any(c.type == "image" for c in result.content)
+                        if has_image:
+                            final_content = tool_content_list
+                        else:
+                            final_content = "\n".join([c.text for c in result.content if c.type == "text"])
+                            
                     else:
-                        result_str = f"Error: Tool '{name}' not found on any connected MCP server."
-                        print(f"\033[91m[!] {result_str}\033[0m", file=sys.stderr)
+                        final_content = f"Error: Tool '{name}' not found on any connected MCP server."
+                        print(f"\033[91m[!] {final_content}\033[0m", file=sys.stderr)
                         
                 except Exception as e:
-                    result_str = f"Error executing tool '{name}': {str(e)}"
-                    print(f"\033[91m[!] {result_str}\033[0m", file=sys.stderr)
+                    final_content = f"Error executing tool '{name}': {str(e)}"
+                    print(f"\033[91m[!] {final_content}\033[0m", file=sys.stderr)
                     
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call_id,
-                    "content": result_str
+                    "content": final_content
                 })
                 
             # Loop will continue to send the tool results back to the LLM

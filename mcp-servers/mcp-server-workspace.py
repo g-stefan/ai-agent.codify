@@ -9,12 +9,14 @@ import fnmatch
 import uvicorn
 import argparse
 import itertools
+import base64
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from mcp.server.fastmcp import FastMCP
 from typing import List, Any, Optional
 from pathlib import Path
+from mcp.types import ImageContent
 
 # --- Pre-parse --env-base ---
 # We use a separate parser that ignores unknown args to grab the env-base prefix early,
@@ -38,7 +40,7 @@ def get_env_var(name: str, default: Any = None) -> Any:
 
 
 # Get the workspace directory from the environment, defaulting to "Workspace"
-WORKSPACE_DIR = get_env_var("WORKSPACE_DIR", "Workspace")
+WORKSPACE_DIR = get_env_var("DIR", "Workspace")
 # Get the port from the environment, defaulting to 48102
 PORT = int(get_env_var("PORT", "48102"))
 # Flag to hide directories starting with a dot (e.g., .git, .agent), defaults to True
@@ -216,10 +218,23 @@ mcp = FastMCP("Workspace", stateless_http=True, json_response=False)
 
 
 @mcp.tool()
-async def read_file_contents(filename: str) -> str:
-    """Read file contents."""
+async def read_file_contents(filename: str) -> Any:
+    """Read file contents (text of image)."""
     text = ""
     try:
+        ext = os.path.splitext(filename)[1].lower()
+        is_image = ext in [".png", ".jpeg", ".jpg"]
+        if is_image:
+            imageFormat = "jpeg" if ext in [".jpeg", ".jpg"] else "png"
+            with open(filename, "rb") as f:
+                data = f.read()
+                b64_data = base64.b64encode(data).decode("utf-8")
+                return ImageContent(
+                        type="image",
+                        data=b64_data,
+                        mimeType=f"image/{imageFormat.lower()}",
+                    )
+
         filename = get_safe_path(WORKSPACE_DIR, filename)
         with open(filename, "r", encoding="utf8") as f:
             text = f.read()

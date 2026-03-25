@@ -7,7 +7,6 @@ Under the hood, it:
 1.  **Embeds** text using an external LLM server endpoint (e.g., `llama.cpp`).
 2.  **Stores** the raw text as a file in a designated directory and inserts the embedding into a **MariaDB** database equipped with vector search capabilities.
 3.  **Searches** the database using Cosine Distance (`VEC_DISTANCE_COSINE`) when asked to recall information.
-4.  **Reranks** the retrieved context (optional but enabled by default) using a secondary LLM reranker endpoint to ensure the most relevant memories are presented to the AI.
 
 The server can run in two modes: standard HTTP mode (accessible via network) or STDIO mode (where it communicates via standard input/output, which is standard for local MCP clients).
 
@@ -34,10 +33,8 @@ The server relies heavily on environment variables for configuration. If `--env-
 | `DB_PASS` | `""` | MariaDB password. |
 | `DB_NAME` | `"memory_db"` | The database name. |
 | `DB_TABLE` | `"embeddings"` | The table name where vector embeddings and file references are stored. |
-| `DB_SEARCH_LIMIT`| `8` | Maximum number of candidate vectors retrieved from the database before reranking. |
+| `DB_SEARCH_LIMIT`| `8` | Maximum number of candidate vectors retrieved from the database. |
 | `LLAMA_EMBED_URL`| `"http://127.0.0.1:8080/embeddings"` | Endpoint to generate vector embeddings. |
-| `LLAMA_RERANK_URL`| `"http://127.0.0.1:8080/v1/rerank"`| Endpoint to rerank retrieved documents for better relevance. |
-| `ENABLE_RERANKING`| `"true"` | Set to `"false"` to skip the reranking step and just use raw vector distance. |
 | `MEMORY_DIR` | `"Memory"` | The local folder where the raw `.txt` files containing the memory content are saved. |
 
 ## Exposed MCP Tools
@@ -53,7 +50,6 @@ Once an LLM connects to this MCP server, it gains access to the following tools:
 *   Python packages: `mcp`, `fastmcp`, `uvicorn`, `starlette`
 *   Database Driver: `mariadb` (Must be installed via `pip install mariadb`)
 *   A running MariaDB server (compiled with Vector Search support if using `VEC_DISTANCE_COSINE`).
-*   A running LLM server (like `llama-server`) exposing `/embeddings` and `/v1/rerank` endpoints.
 
 ## Examples
 

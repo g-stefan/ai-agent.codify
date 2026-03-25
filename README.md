@@ -25,7 +25,6 @@ I used the following:
 The LLM server is running the following:
 - a multimodal LLM, Qwen3.5-35B-A3B
 - a LLM for embeddings, Qwen3-VL-Embedding-2B
-- a LLM for reranking, Qwen3-VL-Reranker-2B
 - a database server based on Maria DB 12, has VECTOR support, for embeddings search (used as LLM memory)
 
 The connection from the LLM Server to the Agent machine it's made over ssh using port forwarding.

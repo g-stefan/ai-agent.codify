@@ -9,9 +9,8 @@ set DB_PASS=
 set DB_NAME=agent
 set DB_TABLE=embeddings
 set LLAMA_EMBED_URL=http://127.0.0.1:48002/embeddings
-set LLAMA_RERANK_URL=http://127.0.0.1:48003/v1/rerank
 set DB_SEARCH_LIMIT=8
 set PORT=48101
-set ENABLE_RERANKING=off
 set MEMORY_DIR=memory
+set WORKSPACE_DIR=workspace
 python mcp-server-memory.py
