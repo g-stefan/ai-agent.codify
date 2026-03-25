@@ -109,7 +109,9 @@ async def chat_loop(
     timeout: int = 360,
     debug_file: Optional[str] = None,
     no_spinner: bool = False,
-    output_file: Optional[str] = None
+    output_file: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
+    include_thoughts: bool = False
 ) -> None:
     """
     Handles the chat loop, streaming text, detecting tool calls, executing them via MCP, and continuing.
@@ -133,6 +135,15 @@ async def chat_loop(
             
         if tools:
             data["tools"] = tools
+
+        # Use Gemini custom thinking_config if include_thoughts is requested, otherwise use standard parameter
+        if include_thoughts:
+            data.setdefault("extra_body", {}).setdefault("google", {}).setdefault("thinking_config", {})
+            data["extra_body"]["google"]["thinking_config"]["include_thoughts"] = True
+            if reasoning_effort:
+                data["extra_body"]["google"]["thinking_config"]["thinking_level"] = reasoning_effort
+        elif reasoning_effort:
+            data["reasoning_effort"] = reasoning_effort
 
         log_debug(debug_file, "request", data)
 
@@ -636,6 +647,8 @@ async def async_main():
     parser.add_argument("--debug", type=str, default=None, help="Path to a JSONL file to log API requests and responses for debugging.")
     parser.add_argument("--no-spinner", action="store_true", help="Disable the thinking and working spinner animation on the console.")
     parser.add_argument("-o", "--output", type=str, default=None, help="Path to a file to save only the final text output (no thinking/tool call).")
+    parser.add_argument("--reasoning-effort", type=str, choices=["low", "medium", "high"], default=None, help="Thinking mode/reasoning effort for supported models (low, medium, high).")
+    parser.add_argument("--include-thoughts", action="store_true", help="Include the model's reasoning thoughts in the output (via extra_body.google.thinking_config).")
 
     args = parser.parse_args()
 
@@ -915,7 +928,9 @@ async def async_main():
                 timeout=args.timeout,
                 debug_file=args.debug,
                 no_spinner=args.no_spinner,
-                output_file=args.output
+                output_file=args.output,
+                reasoning_effort=args.reasoning_effort,
+                include_thoughts=args.include_thoughts
             )
             
             if args.prompt_timeout and args.prompt_timeout > 0:
