@@ -72,7 +72,7 @@
       "agent/agent-llm-cli.py",
       "$PROMPT_FILENAME",
       "--temp",
-      "0.7",
+      "0.3",
       "--session",
       "$PROMPT_SESSION",
       "--system",
