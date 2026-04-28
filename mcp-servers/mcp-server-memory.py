@@ -748,8 +748,8 @@ if not READ_ONLY:
         except Exception as e:
             return f"Error saving file to memory: {str(e)}"
 
-    @mcp.tool(name=f"{TOOL_PREFIX}link_nodes")
-    async def link_nodes(source_id: int, target_id: int, relation: str) -> str:
+    @mcp.tool(name=f"{TOOL_PREFIX}create_relationship")
+    async def create_relationship(source_id: int, target_id: int, relation: str) -> str:
         """
         Use this tool to create a semantic relationship between two existing memory nodes in the knowledge graph.
 
@@ -778,6 +778,32 @@ if not READ_ONLY:
                     conn.close()
         except Exception as e:
             return f"Error linking nodes: {str(e)}"
+        
+    @mcp.tool(name=f"{TOOL_PREFIX}delete_relationship")
+    async def delete_relationship(source_id: int, target_id: int) -> str:
+        """
+        Use this tool to delete a semantic relationship between two existing memory nodes in the knowledge graph.
+
+        Parameters:
+        - source_id (int): The integer ID of the origin node.
+        - target_id (int): The integer ID of the destination node.
+        
+        """
+        try:
+            conn = get_db_connection()
+            try:
+                cur = conn.cursor()
+                query = """
+                    DELETE FROM `node_relation` WHERE source__node__id=? AND target__node__id=?                    
+                """
+                cur.execute(query, (source_id, target_id, ))
+                conn.commit()
+                return f"Successfully deleted relation between node_id {source_id} and node_id {target_id}."
+            finally:
+                if "conn" in locals() and conn.open:
+                    conn.close()
+        except Exception as e:
+            return f"Error delete relation: {str(e)}"
 
     @mcp.tool(name=f"{TOOL_PREFIX}link_node_to_category")
     async def link_node_to_category(node_id: int, category: str) -> str:
