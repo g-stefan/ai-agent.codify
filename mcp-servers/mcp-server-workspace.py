@@ -1,4 +1,4 @@
-# Codify
+# MCP Workspace
 # SPDX-FileCopyrightText: 2026 Grigore Stefan <g_stefan@yahoo.com>
 # SPDX-License-Identifier: Apache-2.0
 
@@ -23,10 +23,15 @@ from mcp.types import ImageContent
 # because we need it to resolve our module-level configuration variables below.
 pre_parser = argparse.ArgumentParser(add_help=False)
 pre_parser.add_argument("--env-base", type=str, default="")
+pre_parser.add_argument("--read-only", action="store_true")
+pre_parser.add_argument("--tool-prefix", type=str, default="workspace_")
+pre_parser.add_argument("--mcp-name", type=str, default="Workspace")
 pre_args, _ = pre_parser.parse_known_args()
 
 ENV_PREFIX = pre_args.env_base
-
+READ_ONLY = pre_args.read_only
+TOOL_PREFIX = pre_args.tool_prefix
+MCP_NAME = pre_args.mcp_name
 
 def get_env_var(name: str, default: Any = None) -> Any:
     """Get an environment variable, optionally applying the env-base prefix."""
@@ -213,15 +218,97 @@ def read_file_chunk(
 
 
 # ---
+# Initialize the MCP Server
+mcp = FastMCP(MCP_NAME, stateless_http=True, json_response=False)
 
-mcp = FastMCP("Workspace", stateless_http=True, json_response=False)
+# Only register write functionality if not in read-only mode
+if not READ_ONLY:
+
+    @mcp.tool(name=f"{TOOL_PREFIX}write_file_contents")
+    async def write_file_contents(filename: str, text: str) -> str:
+        """Write file contents (only text)."""
+        basePath = WORKSPACE_DIR
+        try:
+            filename = get_safe_path(WORKSPACE_DIR, filename)
+            Path(filename).parent.mkdir(parents=True, exist_ok=True)
+            with open(filename, "w", encoding="utf8") as f:
+                f.write(text)
+        except FileNotFoundError:
+            return f"Error: The system cannot find the path specified for '{filename}'."
+        except PermissionError as e:
+            return f"Error: Permission denied. {str(e)}"
+        except Exception as e:
+            return f"Error: An unexpected system error occurred. {str(e)}"
+        filenameX = filename[len(basePath) + 1 :]
+        return f"Successfully wrote {len(text)} characters to '{filenameX}'."
+
+    @mcp.tool(name=f"{TOOL_PREFIX}apply_diff")
+    async def apply_diff(filename: str, text: str) -> str:
+        """Apply standard unified diff to file."""
+        try:
+            filename = get_safe_path(WORKSPACE_DIR, filename)
+            if not apply_diff_file(filename, text):
+                return "Error: unknown error. Diff not applied."
+        except FileNotFoundError:
+            return f"Error: File not found. The path '{filename}' does not exist."
+        except PermissionError as e:
+            return f"Error: Permission denied. {str(e)}"
+        except Exception as e:
+            return f"Error: An unexpected system error occurred. {str(e)}"
+        return "Diff applied successfully."
+
+    @mcp.tool(name=f"{TOOL_PREFIX}replace_text_in_file")
+    async def replace_text_in_file(filename: str, text: str, new_text: str) -> str:
+        """Replace specific occurrences of text in a file with new text."""
+        basePath = WORKSPACE_DIR
+        try:
+            # Resolve the safe path
+            safe_filename = get_safe_path(WORKSPACE_DIR, filename)
+
+            # Ensure the file actually exists before reading
+            if not Path(safe_filename).is_file():
+                return f"Error: The file '{filename}' does not exist."
+
+            # Read the current contents of the file
+            with open(safe_filename, "r", encoding="utf8") as f:
+                content = f.read()
+
+            # Check if the text to replace actually exists in the file
+            if text not in content:
+                return f"Warning: The exact text to replace was not found in '{filename}'. No changes made."
+
+            # Count occurrences for the success message
+            occurrences = content.count(text)
+
+            # Replace the text
+            new_content = content.replace(text, new_text)
+
+            # Write the updated contents back to the file
+            with open(safe_filename, "w", encoding="utf8") as f:
+                f.write(new_content)
+
+        except FileNotFoundError:
+            return f"Error: The system cannot find the path specified for '{filename}'."
+        except PermissionError as e:
+            return f"Error: Permission denied. {str(e)}"
+        except Exception as e:
+            return f"Error: An unexpected system error occurred. {str(e)}"
+
+        # Format the relative file path for the return message
+        filenameX = str(safe_filename)[len(str(basePath)) + 1 :]
+        return f"Successfully replaced {occurrences} occurrence(s) of text in '{filenameX}'."
 
 
-@mcp.tool()
+# ---
+
+
+@mcp.tool(name=f"{TOOL_PREFIX}read_file_contents")
 async def read_file_contents(filename: str) -> Any:
-    """Read file contents (text of image)."""
+    """Read file contents (text or image)."""
     text = ""
     try:
+        filename = get_safe_path(WORKSPACE_DIR, filename)
+
         ext = os.path.splitext(filename)[1].lower()
         is_image = ext in [".png", ".jpeg", ".jpg"]
         if is_image:
@@ -230,12 +317,11 @@ async def read_file_contents(filename: str) -> Any:
                 data = f.read()
                 b64_data = base64.b64encode(data).decode("utf-8")
                 return ImageContent(
-                        type="image",
-                        data=b64_data,
-                        mimeType=f"image/{imageFormat.lower()}",
-                    )
-
-        filename = get_safe_path(WORKSPACE_DIR, filename)
+                    type="image",
+                    data=b64_data,
+                    mimeType=f"image/{imageFormat.lower()}",
+                )
+        
         with open(filename, "r", encoding="utf8") as f:
             text = f.read()
     except FileNotFoundError:
@@ -247,26 +333,7 @@ async def read_file_contents(filename: str) -> Any:
     return text
 
 
-@mcp.tool()
-async def write_file_contents(filename: str, text: str) -> str:
-    """Write file contents."""
-    basePath = WORKSPACE_DIR
-    try:
-        filename = get_safe_path(WORKSPACE_DIR, filename)
-        Path(filename).parent.mkdir(parents=True, exist_ok=True)
-        with open(filename, "w", encoding="utf8") as f:
-            f.write(text)
-    except FileNotFoundError:
-        return f"Error: The system cannot find the path specified for '{filename}'."
-    except PermissionError as e:
-        return f"Error: Permission denied. {str(e)}"
-    except Exception as e:
-        return f"Error: An unexpected system error occurred. {str(e)}"
-    filenameX = filename[len(basePath) + 1 :]
-    return f"Successfully wrote {len(text)} characters to '{filenameX}'."
-
-
-@mcp.tool()
+@mcp.tool(name=f"{TOOL_PREFIX}list_files")
 async def list_files() -> List[str]:
     """List files."""
     try:
@@ -296,7 +363,7 @@ async def list_files() -> List[str]:
     return retV
 
 
-@mcp.tool()
+@mcp.tool(name=f"{TOOL_PREFIX}search_files")
 async def search_files(pattern: str = "*") -> List[str]:
     """Search files by filename pattern."""
     try:
@@ -329,23 +396,7 @@ async def search_files(pattern: str = "*") -> List[str]:
     return retV
 
 
-@mcp.tool()
-async def apply_diff(filename: str, text: str) -> str:
-    """Apply standard unified diff to file."""
-    try:
-        filename = get_safe_path(WORKSPACE_DIR, filename)
-        if not apply_diff_file(filename, text):
-            return "Error: unknown error. Diff not applied."
-    except FileNotFoundError:
-        return f"Error: File not found. The path '{filename}' does not exist."
-    except PermissionError as e:
-        return f"Error: Permission denied. {str(e)}"
-    except Exception as e:
-        return f"Error: An unexpected system error occurred. {str(e)}"
-    return "Diff applied successfully."
-
-
-@mcp.tool()
+@mcp.tool(name=f"{TOOL_PREFIX}read_file_lines")
 async def read_file_lines(filename: str, offset: int, count: int = 2000) -> str:
     """Read file content by count lines from line at offset."""
     try:
@@ -359,7 +410,7 @@ async def read_file_lines(filename: str, offset: int, count: int = 2000) -> str:
         return f"Error: An unexpected system error occurred. {str(e)}"
 
 
-@mcp.tool()
+@mcp.tool(name=f"{TOOL_PREFIX}grep_files")
 async def grep_files(pattern: str, file_pattern: str = "*") -> List[str]:
     """
     Search the contents of files for a given text or regex pattern.
@@ -433,48 +484,7 @@ async def grep_files(pattern: str, file_pattern: str = "*") -> List[str]:
     return retV
 
 
-@mcp.tool()
-async def replace_text_in_file(filename: str, text: str, new_text: str) -> str:
-    """Replace specific occurrences of text in a file with new text."""
-    basePath = WORKSPACE_DIR
-    try:
-        # Resolve the safe path
-        safe_filename = get_safe_path(WORKSPACE_DIR, filename)
-
-        # Ensure the file actually exists before reading
-        if not Path(safe_filename).is_file():
-            return f"Error: The file '{filename}' does not exist."
-
-        # Read the current contents of the file
-        with open(safe_filename, "r", encoding="utf8") as f:
-            content = f.read()
-
-        # Check if the text to replace actually exists in the file
-        if text not in content:
-            return f"Warning: The exact text to replace was not found in '{filename}'. No changes made."
-
-        # Count occurrences for the success message
-        occurrences = content.count(text)
-
-        # Replace the text
-        new_content = content.replace(text, new_text)
-
-        # Write the updated contents back to the file
-        with open(safe_filename, "w", encoding="utf8") as f:
-            f.write(new_content)
-
-    except FileNotFoundError:
-        return f"Error: The system cannot find the path specified for '{filename}'."
-    except PermissionError as e:
-        return f"Error: Permission denied. {str(e)}"
-    except Exception as e:
-        return f"Error: An unexpected system error occurred. {str(e)}"
-
-    # Format the relative file path for the return message
-    filenameX = str(safe_filename)[len(str(basePath)) + 1 :]
-    return (
-        f"Successfully replaced {occurrences} occurrence(s) of text in '{filenameX}'."
-    )
+# --- Authentication Middleware ---
 
 
 class APIKeyAuthMiddleware(BaseHTTPMiddleware):
@@ -519,6 +529,23 @@ if __name__ == "__main__":
         "--env-base",
         type=str,
         help="Prefix for environment variables to isolate different servers (e.g., PREFIX)",
+    )
+    parser.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Disable write functionality (only read/list functions will be active)",
+    )
+    parser.add_argument(
+        "--tool-prefix",
+        type=str,
+	default="workspace_",
+        help="Prefix for MCP tool",
+    )
+    parser.add_argument(
+        "--mcp-name",
+        type=str,
+	default="Workspace",
+        help="MCP name, default: Workspace",
     )
 
     args = parser.parse_args()
