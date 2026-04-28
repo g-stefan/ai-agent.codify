@@ -40,6 +40,7 @@ TOOL_PREFIX = pre_args.tool_prefix
 MEDIA_MARKER = pre_args.media_marker
 MCP_NAME = pre_args.mcp_name
 
+
 def get_env_var(name: str, default: Any = None) -> Any:
     """Get an environment variable, optionally applying the env-base prefix."""
     if ENV_PREFIX:
@@ -72,6 +73,7 @@ WORKSPACE_DIR = get_env_var("WORKSPACE_DIR", "Workspace")
 os.makedirs(WORKSPACE_DIR, exist_ok=True)
 
 # --- Helper Functions ---
+
 
 def get_safe_path(base_folder: str, user_path: str) -> Path:
     """
@@ -109,6 +111,7 @@ def get_safe_path(base_folder: str, user_path: str) -> Path:
 
     return base_folder + "/" + user_path
 
+
 def read_file_content_and_type(
     filepath: str, binary: bool = False
 ) -> tuple[str, bool, str]:
@@ -138,7 +141,7 @@ def get_embedding(text_or_image_url: str, is_image: bool = False) -> List[float]
         # Structure for multimodal data containing an image
         payload = {
             "content": [
-                {"prompt_string": MEDIA_MARKER, "multimodal_data": [text_or_image_url]}                
+                {"prompt_string": MEDIA_MARKER, "multimodal_data": [text_or_image_url]}
             ]
         }
     else:
@@ -266,6 +269,7 @@ def get_node_category_name(id: int):
     except Exception as e:
         print(f"Error: Could not get node category: {e}", file=sys.stderr)
 
+
 def get_node_category_list(node_id: int):
     """Get node category list by node_id"""
     results = []
@@ -283,18 +287,15 @@ def get_node_category_list(node_id: int):
                         """,
                 (node_id,),
             )
-            for row in cur:            
-                results.append(
-                    {
-                        "name": row[0]
-                    }
-                )
+            for row in cur:
+                results.append({"name": row[0]})
             return results
         finally:
             if "conn" in locals() and conn.open:
                 conn.close()
     except Exception as e:
         print(f"Error: Could not get node category: {e}", file=sys.stderr)
+
 
 def add_node_to_category(nodeId: int, category: str):
     if nodeId == 0:
@@ -338,6 +339,50 @@ def remove_node_from_category(nodeId: int, category: str):
                 DELETE FROM `node_x_category` WHERE node__id=? AND category__id=?                
             """
             cur.execute(query, (nodeId, categoryId))
+            conn.commit()
+        finally:
+            if "conn" in locals() and conn.open:
+                conn.close()
+    except Exception as e:
+        return
+
+
+def db_delete_node(nodeId: int):
+    if nodeId == 0:
+        return
+    try:
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+
+            cur.execute(
+                f"""
+                    SELECT document FROM `node` WHERE id=?                        
+                """,
+                (nodeId,),
+            )
+            row = cur.fetchone()
+            if row:
+                filepath = get_safe_path(MEMORY_DIR, row[0])
+                if os.path.exists(filepath):
+                    os.remove(filepath)
+
+            query = """
+                DELETE FROM `node` WHERE id=?
+            """
+            cur.execute(query, (nodeId,))
+            query = """
+                DELETE FROM `node_relation` WHERE source__node__id=?
+            """
+            cur.execute(query, (nodeId,))
+            query = """
+                DELETE FROM `node_relation` WHERE target__node__id=?
+            """
+            cur.execute(query, (nodeId,))
+            query = """
+                DELETE FROM `node_x_category` WHERE node__id=?
+            """
+            cur.execute(query, (nodeId,))
             conn.commit()
         finally:
             if "conn" in locals() and conn.open:
@@ -605,15 +650,17 @@ if not READ_ONLY:
         try:
             now = datetime.now()
             date_folder = now.strftime("%Y-%m-%d")
-            hour_folder = now.strftime("%H")            
-            doc_id = str(uuid.uuid4())            
+            hour_folder = now.strftime("%H")
+            doc_id = str(uuid.uuid4())
             # The relative filename used in DB e.g. "2026-04-28/01/UUID.txt"
-            rel_filename = f"{date_folder}/{hour_folder}/{doc_id}.txt"            
+            rel_filename = f"{date_folder}/{hour_folder}/{doc_id}.txt"
             # The absolute path on disk
-            filepath = os.path.join(MEMORY_DIR, date_folder, hour_folder, f"{doc_id}.txt")            
+            filepath = os.path.join(
+                MEMORY_DIR, date_folder, hour_folder, f"{doc_id}.txt"
+            )
             # Ensure the nested directories exist
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
-            
+
             # 1. Save content to Workspace Folder (Memory Directory)
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(info)
@@ -648,7 +695,7 @@ if not READ_ONLY:
             original_filepath = get_safe_path(WORKSPACE_DIR, filename)
             if not os.path.exists(original_filepath):
                 return f"Error: File '{filename}' not found in Workspace."
-            
+
             print("remember file #1: " + str(filename))
 
             # Generate date and hour folder strings
@@ -659,24 +706,26 @@ if not READ_ONLY:
             # Generate new GUID-based filename
             doc_id = str(uuid.uuid4())
             _, ext = os.path.splitext(filename)
-            
+
             # The relative filename used in DB
             rel_filename = f"{date_folder}/{hour_folder}/{doc_id}{ext}"
-            
+
             # The absolute path on disk
-            new_filepath = os.path.join(MEMORY_DIR, date_folder, hour_folder, f"{doc_id}{ext}")
-            
+            new_filepath = os.path.join(
+                MEMORY_DIR, date_folder, hour_folder, f"{doc_id}{ext}"
+            )
+
             # Ensure the nested directories exist
             os.makedirs(os.path.dirname(new_filepath), exist_ok=True)
 
             print("remember file #2: " + str(rel_filename))
-            
+
             # Read content and fetch embeddings
             content, is_image, imageFormat = read_file_content_and_type(
                 original_filepath
             )
 
-            print("remember file #3: "+str(is_image))
+            print("remember file #3: " + str(is_image))
 
             emb = get_embedding(content, is_image=is_image)
 
@@ -693,7 +742,7 @@ if not READ_ONLY:
             )
             add_node_to_category(nodeId, category)
 
-            print("remember file #6")            
+            print("remember file #6")
 
             return f"Memory successfully saved, node_id: {nodeId}."
         except Exception as e:
@@ -755,6 +804,19 @@ if not READ_ONLY:
         """
         remove_node_from_category(node_id, category)
         return f"Removed"
+
+    @mcp.tool(name=f"{TOOL_PREFIX}delete_node")
+    async def delete_node(node_id: int) -> str:
+        """
+        Use this tool to delete an existing memory node.
+
+        Parameters:
+        - node_id (int): The integer ID of the memory node.
+        """
+
+        db_delete_node(node_id)
+
+        return f"Deleted"
 
 
 @mcp.tool(name=f"{TOOL_PREFIX}recall")
@@ -923,18 +985,19 @@ async def get_node_category(node_id: int) -> List[Any]:
     - node_id (int): The integer ID of the memory node you want to investigate.
 
     Returns:
-    A list of all categories that this node are part of.    
+    A list of all categories that this node are part of.
     """
     results = get_node_category_list(node_id)
     if not results:
         return [
-                    TextContent(
-                        type="text",
-                        text=f"No category found for memory node_id: {node_id}",
-                    )
-                ]
+            TextContent(
+                type="text",
+                text=f"No category found for memory node_id: {node_id}",
+            )
+        ]
     header = f"Categories for memory node_id: {node_id}\n"
     return [TextContent(type="text", text=header + ", ".join(results))]
+
 
 # --- Authentication Middleware ---
 
@@ -997,19 +1060,19 @@ if __name__ == "__main__":
     parser.add_argument(
         "--tool-prefix",
         type=str,
-	default="memory_",
+        default="memory_",
         help="Prefix for MCP tool",
     )
     parser.add_argument(
         "--media-marker",
         type=str,
-	default="<__media__>",
+        default="<__media__>",
         help="Media marker for image embeddings",
     )
     parser.add_argument(
         "--mcp-name",
         type=str,
-	default="Memory",
+        default="Memory",
         help="MCP name, default: Memory",
     )
 

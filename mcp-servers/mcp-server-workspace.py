@@ -226,28 +226,26 @@ if not READ_ONLY:
 
     @mcp.tool(name=f"{TOOL_PREFIX}write_file_contents")
     async def write_file_contents(filename: str, text: str) -> str:
-        """Write file contents (only text)."""
-        basePath = WORKSPACE_DIR
+        """Write file contents (only text)."""        
         try:
-            filename = get_safe_path(WORKSPACE_DIR, filename)
-            Path(filename).parent.mkdir(parents=True, exist_ok=True)
-            with open(filename, "w", encoding="utf8") as f:
+            filepath = get_safe_path(WORKSPACE_DIR, filename)
+            Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+            with open(filepath, "w", encoding="utf8") as f:
                 f.write(text)
         except FileNotFoundError:
             return f"Error: The system cannot find the path specified for '{filename}'."
         except PermissionError as e:
             return f"Error: Permission denied. {str(e)}"
         except Exception as e:
-            return f"Error: An unexpected system error occurred. {str(e)}"
-        filenameX = filename[len(basePath) + 1 :]
-        return f"Successfully wrote {len(text)} characters to '{filenameX}'."
+            return f"Error: An unexpected system error occurred. {str(e)}"        
+        return f"Successfully wrote {len(text)} characters to '{filename}'."
 
     @mcp.tool(name=f"{TOOL_PREFIX}apply_diff")
     async def apply_diff(filename: str, text: str) -> str:
         """Apply standard unified diff to file."""
         try:
-            filename = get_safe_path(WORKSPACE_DIR, filename)
-            if not apply_diff_file(filename, text):
+            filepath = get_safe_path(WORKSPACE_DIR, filename)
+            if not apply_diff_file(filepath, text):
                 return "Error: unknown error. Diff not applied."
         except FileNotFoundError:
             return f"Error: File not found. The path '{filename}' does not exist."
@@ -259,18 +257,17 @@ if not READ_ONLY:
 
     @mcp.tool(name=f"{TOOL_PREFIX}replace_text_in_file")
     async def replace_text_in_file(filename: str, text: str, new_text: str) -> str:
-        """Replace specific occurrences of text in a file with new text."""
-        basePath = WORKSPACE_DIR
+        """Replace specific occurrences of text in a file with new text."""        
         try:
             # Resolve the safe path
-            safe_filename = get_safe_path(WORKSPACE_DIR, filename)
+            filepath = get_safe_path(WORKSPACE_DIR, filename)
 
             # Ensure the file actually exists before reading
-            if not Path(safe_filename).is_file():
+            if not Path(filepath).is_file():
                 return f"Error: The file '{filename}' does not exist."
 
             # Read the current contents of the file
-            with open(safe_filename, "r", encoding="utf8") as f:
+            with open(filepath, "r", encoding="utf8") as f:
                 content = f.read()
 
             # Check if the text to replace actually exists in the file
@@ -284,7 +281,7 @@ if not READ_ONLY:
             new_content = content.replace(text, new_text)
 
             # Write the updated contents back to the file
-            with open(safe_filename, "w", encoding="utf8") as f:
+            with open(filepath, "w", encoding="utf8") as f:
                 f.write(new_content)
 
         except FileNotFoundError:
@@ -293,11 +290,23 @@ if not READ_ONLY:
             return f"Error: Permission denied. {str(e)}"
         except Exception as e:
             return f"Error: An unexpected system error occurred. {str(e)}"
+        
+        return f"Successfully replaced {occurrences} occurrence(s) of text in '{filename}'."
 
-        # Format the relative file path for the return message
-        filenameX = str(safe_filename)[len(str(basePath)) + 1 :]
-        return f"Successfully replaced {occurrences} occurrence(s) of text in '{filenameX}'."
-
+    @mcp.tool(name=f"{TOOL_PREFIX}delete_file")
+    async def delete_file(filename: str) -> str:
+        """Delete file"""        
+        try:
+            filepath = get_safe_path(WORKSPACE_DIR, filename)
+            if os.path.exists(filepath):
+                    os.remove(filepath)
+        except FileNotFoundError:
+            return f"Error: The system cannot find the path specified for '{filename}'."
+        except PermissionError as e:
+            return f"Error: Permission denied. {str(e)}"
+        except Exception as e:
+            return f"Error: An unexpected system error occurred. {str(e)}"        
+        return f"Successfully deleted file '{filename}'."
 
 # ---
 
@@ -307,13 +316,13 @@ async def read_file_contents(filename: str) -> Any:
     """Read file contents (text or image)."""
     text = ""
     try:
-        filename = get_safe_path(WORKSPACE_DIR, filename)
+        filepath = get_safe_path(WORKSPACE_DIR, filename)
 
-        ext = os.path.splitext(filename)[1].lower()
+        ext = os.path.splitext(filepath)[1].lower()
         is_image = ext in [".png", ".jpeg", ".jpg"]
         if is_image:
             imageFormat = "jpeg" if ext in [".jpeg", ".jpg"] else "png"
-            with open(filename, "rb") as f:
+            with open(filepath, "rb") as f:
                 data = f.read()
                 b64_data = base64.b64encode(data).decode("utf-8")
                 return ImageContent(
@@ -322,7 +331,7 @@ async def read_file_contents(filename: str) -> Any:
                     mimeType=f"image/{imageFormat.lower()}",
                 )
         
-        with open(filename, "r", encoding="utf8") as f:
+        with open(filepath, "r", encoding="utf8") as f:
             text = f.read()
     except FileNotFoundError:
         return f"Error: File not found. The path '{filename}' does not exist."
@@ -339,7 +348,7 @@ async def list_files() -> List[str]:
     try:
         myPath = WORKSPACE_DIR
         if not os.path.exists(myPath):
-            raise FileNotFoundError(f"Workspace directory '{myPath}' does not exist.")
+            raise FileNotFoundError(f"{MCP_NAME} directory does not exist.")
 
         myFiles = []
         for dirpath, dirnames, filenames in os.walk(myPath):
@@ -369,7 +378,7 @@ async def search_files(pattern: str = "*") -> List[str]:
     try:
         myPath = WORKSPACE_DIR
         if not os.path.exists(myPath):
-            raise FileNotFoundError(f"Workspace directory '{myPath}' does not exist.")
+            raise FileNotFoundError(f"{MCP_NAME} directory does not exist.")
 
         myFiles = []
         for dirpath, dirnames, filenames in os.walk(myPath):
@@ -400,8 +409,8 @@ async def search_files(pattern: str = "*") -> List[str]:
 async def read_file_lines(filename: str, offset: int, count: int = 2000) -> str:
     """Read file content by count lines from line at offset."""
     try:
-        filename = get_safe_path(WORKSPACE_DIR, filename)
-        return read_file_chunk(filename, offset, count)
+        filepath = get_safe_path(WORKSPACE_DIR, filename)
+        return read_file_chunk(filepath, offset, count)
     except FileNotFoundError:
         return f"Error: File not found. The path '{filename}' does not exist."
     except PermissionError as e:
@@ -423,7 +432,7 @@ async def grep_files(pattern: str, file_pattern: str = "*") -> List[str]:
     try:
         myPath = WORKSPACE_DIR
         if not os.path.exists(myPath):
-            raise FileNotFoundError(f"Workspace directory '{myPath}' does not exist.")
+            raise FileNotFoundError(f"{MCP_NAME} directory does not exist.")
 
         # Attempt to compile the pattern as a regex.
         # If it's an invalid regex (e.g., "*foo*"), fallback to literal text matching.
