@@ -249,6 +249,26 @@ def get_node_category_id(name: str):
     except Exception as e:
         print(f"Error: Could not get node category: {e}", file=sys.stderr)
 
+def has_category(name: str):
+    """Check if category exists by name"""
+    if len(name) == 0:
+        return 0
+    try:
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM `node_category` WHERE name = ?", (name,))
+            row = cur.fetchone()
+            if row:
+                if not (row[0] == 0):
+                    return row[0]
+            return 0
+        finally:
+            if "conn" in locals() and conn.open:
+                conn.close()
+    except Exception as e:
+        print(f"Error: Could not get node category: {e}", file=sys.stderr)
+
 
 def get_node_category_name(id: int):
     """Get node category by id"""
@@ -1024,6 +1044,16 @@ async def get_node_category(node_id: int) -> List[Any]:
     header = f"Categories for memory node_id: {node_id}\n"
     return [TextContent(type="text", text=header + ", ".join(results))]
 
+@mcp.tool(name=f"{TOOL_PREFIX}category_exists")
+async def category_exists(name: str) -> str:
+    """
+    Use this tool to check if a category with specified name exists.
+    """
+
+    if has_category(name) == 0:
+        return f"Category with name '{name}' does not exists."
+            
+    return f"Category with name '{name}' found."
 
 # --- Authentication Middleware ---
 
