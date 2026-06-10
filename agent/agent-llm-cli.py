@@ -22,6 +22,14 @@ from typing import Optional, Dict, Any, List, Tuple
 from contextlib import AsyncExitStack
 from datetime import datetime, timezone
 
+# Optional dependency for API mode
+try:
+    import aiohttp_cors
+    from aiohttp import web
+    AIOHTTP_AVAILABLE = True
+except ImportError:
+    AIOHTTP_AVAILABLE = False
+
 def log_debug(filepath: Optional[str], log_type: str, data: Any) -> None:
     """Logs the API request or response chunk to a JSONL file."""
     if not filepath:
@@ -111,7 +119,8 @@ async def chat_loop(
     no_spinner: bool = False,
     output_file: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
-    include_thoughts: bool = False
+    include_thoughts: bool = False,
+    stream_queue: Optional[asyncio.Queue] = None
 ) -> None:
     """
     Handles the chat loop, streaming text, detecting tool calls, executing them via MCP, and continuing.
@@ -235,25 +244,32 @@ async def chat_loop(
                     sys.stdout.flush()
                     spinner_active = False
                 e = content_bytes
+                
+                err_msg = str(e)
                 if isinstance(e, HTTPError):
-                    print(f"\n\033[91m[!] Server Error: {e.code} - {e.reason}\033[0m", file=sys.stderr)
                     error_body = e.read().decode('utf-8')
+                    err_msg = f"Server Error {e.code}: {e.reason} - {error_body}"
+                    print(f"\n\033[91m[!] Server Error: {e.code} - {e.reason}\033[0m", file=sys.stderr)
                     if error_body:
                         print(f"\033[91m    Details: {error_body}\033[0m", file=sys.stderr)
                         if "key 'prompt' not found" in error_body:
                             print("\033[93m    Hint: You are targeting the '/completion' endpoint, but this script requires the Chat API ('/v1/chat/completions').\033[0m", file=sys.stderr)
                 elif isinstance(e, URLError):
+                    err_msg = f"Connection Error: {e.reason}"
                     print(f"\n\033[91m[!] Connection Error: {e.reason}\033[0m", file=sys.stderr)
                     if "time" in str(e.reason).lower() or isinstance(e.reason, socket.timeout):
                         print(f"\033[93m    The server took too long to respond (timeout={timeout}s). You can increase it with --timeout.\033[0m", file=sys.stderr)
                     else:
                         print("\033[93m    Make sure your llama-server is running and the URL is correct.\033[0m", file=sys.stderr)
                 elif isinstance(e, TimeoutError):
+                    err_msg = f"Connection Timeout ({timeout}s)"
                     print(f"\n\033[91m[!] Connection Timeout: The request exceeded the {timeout}s timeout.\033[0m", file=sys.stderr)
-                    print(f"\033[93m    You can increase it with --timeout.\033[0m", file=sys.stderr)
                 else:
                     print(f"\n\033[91m[!] Stream Error: {e}\033[0m", file=sys.stderr)
-                sys.exit(1)
+
+                if stream_queue:
+                    stream_queue.put_nowait({"type": "error", "error": err_msg})
+                raise RuntimeError(err_msg)
 
             if msg_type == "done":
                 if spinner_active:
@@ -343,6 +359,8 @@ async def chat_loop(
                                             
                     if reasoning:                        
                         sys.stdout.write(f"\033[95m{reasoning}\033[0m")
+                        if stream_queue:
+                            stream_queue.put_nowait({"type": "thinking", "data": reasoning})
                         just_printed = True
 
                     is_thinking = False
@@ -355,6 +373,8 @@ async def chat_loop(
                             sys.stdout.write(f"{content}\033[0m")                            
                         else:
                             sys.stdout.write(content)
+                        if stream_queue:
+                            stream_queue.put_nowait({"type": "content", "data": content})
                             
                         just_printed = True
                         
@@ -395,10 +415,13 @@ async def chat_loop(
             except Exception as e:
                 print(f"\033[93m[!] Warning: Failed to write to output file: {e}\033[0m", file=sys.stderr)
         
-        # New Check: Exit with error 1 if generation gracefully completed but was still in the "thinking" state.
+        # New Check: Exit with error if generation gracefully completed but was still in the "thinking" state.
         if finish_reason == "stop" and last_state == "thinking":
-            print("\033[91m[!] Error: Model stopped processing in thinking state\033[0m", file=sys.stderr)
-            sys.exit(1)
+            err_msg = "Model stopped processing in thinking state"
+            print(f"\033[91m[!] Error: {err_msg}\033[0m", file=sys.stderr)
+            if stream_queue:
+                stream_queue.put_nowait({"type": "error", "error": err_msg})
+            raise RuntimeError(err_msg)
         
         if final_usage:
             predicted_n = final_usage.get("completion_tokens", 0)
@@ -533,6 +556,8 @@ async def chat_loop(
                 
                 display_args = args_str if len(args_str) <= 60 else args_str[:57] + "..."
                 print(f"\033[93m[*] Model executing tool: {name}({display_args})\033[0m", file=sys.stderr)
+                if stream_queue:
+                    stream_queue.put_nowait({"type": "tool_call", "name": name, "arguments": args_str})
                 
                 try:
                     args_dict = json.loads(args_str) if args_str else {}
@@ -574,6 +599,11 @@ async def chat_loop(
                     final_content = f"Error executing tool '{name}': {str(e)}"
                     print(f"\033[91m[!] {final_content}\033[0m", file=sys.stderr)
                     
+                if stream_queue:
+                    # Provide a summarized version to the API to avoid massive payloads over SSE
+                    summary = str(final_content)[:1500] + ("..." if len(str(final_content)) > 1500 else "")
+                    stream_queue.put_nowait({"type": "tool_result", "name": name, "data": summary})
+
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call_id,
@@ -596,6 +626,7 @@ async def chat_loop(
             if current_assistant_extra:
                 msg["extra_content"] = current_assistant_extra
             messages.append(msg)
+            
         break
 
 class MCPAppendAction(argparse.Action):
@@ -632,8 +663,8 @@ async def async_main():
     parser.add_argument("--assets", type=str, nargs='+', help="Path(s) to folder(s) containing image (png, jpg, jpeg) files to automatically include in the prompt.")
     parser.add_argument("--mcp", type=str, action=MCPAppendAction, nargs='+', help="Commands to start MCP servers (e.g., 'npx -y ...') or HTTP URLs ('http://.../sse' for SSE, 'http://.../mcp' for Streamable HTTP). Can be specified multiple times.")
     parser.add_argument("--mcp-api-key", type=str, action=MCPAPIKeyAction, help="API key for the preceding MCP server.")
-    parser.add_argument("--mcp-env-base", type=str, action=MCPEnvBaseAction, help="Prefix for environment variables to pass to the preceding MCP server in stdio mode (e.g., 'FOO' to map FOO_API_KEY to API_KEY).")
-    parser.add_argument("--url", type=str, default="http://127.0.0.1:8080/v1/chat/completions", help="URL of the llama-server (default: http://127.0.0.1:8080/v1/chat/completions)")
+    parser.add_argument("--mcp-env-base", type=str, action=MCPEnvBaseAction, help="Prefix for environment variables to pass to the preceding MCP server in stdio mode.")
+    parser.add_argument("--url", type=str, default="http://127.0.0.1:8080/v1/chat/completions", help="URL of the server (default: http://127.0.0.1:8080/v1/chat/completions)")
     parser.add_argument("--temp", type=float, default=0.7, help="Generation temperature (default: 0.7)")
     parser.add_argument("--max-tokens", type=int, default=-1, help="Maximum tokens to predict. -1 means infinity (default: -1)")
     parser.add_argument("--api-key", type=str, default=os.environ.get("API_KEY"), help="API key for the server (can also use API_KEY env var)")
@@ -643,18 +674,23 @@ async def async_main():
     parser.add_argument("--tool-session", type=str, default=None, help="Path to a JSON file to log the tool descriptions loaded into the model.")
     parser.add_argument("--insecure", action="store_true", help="Allow insecure server connections when using SSL (disable certificate verification).")
     parser.add_argument("--timeout", type=int, default=360, help="Timeout in seconds for HTTP requests (default: 360)")
-    parser.add_argument("--prompt-timeout", type=int, default=360, help="Maximum overall time in seconds allowed for the generation, thinking, and tool execution (default: 360). Returns an error if exceeded.")
+    parser.add_argument("--prompt-timeout", type=int, default=360, help="Maximum overall time in seconds allowed for the generation (default: 360).")
     parser.add_argument("--debug", type=str, default=None, help="Path to a JSONL file to log API requests and responses for debugging.")
     parser.add_argument("--no-spinner", action="store_true", help="Disable the thinking and working spinner animation on the console.")
     parser.add_argument("-o", "--output", type=str, default=None, help="Path to a file to save only the final text output (no thinking/tool call).")
-    parser.add_argument("--reasoning-effort", type=str, choices=["low", "medium", "high"], default=None, help="Thinking mode/reasoning effort for supported models (low, medium, high).")
-    parser.add_argument("--include-thoughts", action="store_true", help="Include the model's reasoning thoughts in the output (via extra_body.google.thinking_config).")
+    parser.add_argument("--reasoning-effort", type=str, choices=["low", "medium", "high"], default=None, help="Thinking mode/reasoning effort for supported models.")
+    parser.add_argument("--include-thoughts", action="store_true", help="Include the model's reasoning thoughts in the output.")
+    
+    # New interactive and API mode arguments
+    parser.add_argument("-i", "--interactive", action="store_true", help="Start an interactive terminal chat loop.")
+    parser.add_argument("--api-port", type=int, default=None, help="Start an HTTP API server on this port for GUI clients (SSE streaming).")
+    parser.add_argument("--api-host", type=str, default="127.0.0.1", help="Host interface for the API server (default: 127.0.0.1).")
 
     args = parser.parse_args()
 
-    # Ensure at least some form of input was provided
-    if not any([args.input, args.prompt, args.session, args.images, args.assets]):
-        parser.error("You must provide at least one input source: a file, a prompt string (-p), images, assets, or a session.")
+    # Ensure at least some form of input or operational mode was provided
+    if not any([args.input, args.prompt, args.session, args.images, args.assets, args.interactive, args.api_port]):
+        parser.error("You must provide an input source, or use --interactive / --api-port to start an interactive session.")
 
     # Truncate/initialize output file if specified
     if args.output:
@@ -666,25 +702,21 @@ async def async_main():
             sys.exit(1)
 
     if args.insecure:
-        # Globally disable SSL verification for standard library functions (helps with external module connections)
+        # Globally disable SSL verification for standard library functions
         ssl._create_default_https_context = ssl._create_unverified_context
 
-    # Configure Backend Setup
     api_key = args.api_key
-    # Auto-correct old /completion endpoint to Chat API endpoint for llama-server
     if args.url.endswith("/completion"):
         print("\033[93m[*] Notice: Auto-correcting URL from '/completion' to '/v1/chat/completions' for Chat API & MCP support.\033[0m", file=sys.stderr)
         args.url = args.url.replace("/completion", "/v1/chat/completions")
 
-    # Verify MCP dependencies if MCP is requested
+    # Verify MCP dependencies
     if getattr(args, 'mcp_configs', None):
         try:
             import mcp
             from mcp.client.stdio import stdio_client, StdioServerParameters
             from mcp.client.sse import sse_client
             from mcp.client.session import ClientSession
-            
-            # Streamable HTTP is available in newer versions of the mcp package
             try:
                 from mcp.client.streamable_http import streamablehttp_client
             except ImportError:
@@ -696,9 +728,11 @@ async def async_main():
             sys.exit(1)
 
     messages = []
-
-    # Load session history if provided
     session_msg_count = 0
+    usage_tracker = {}
+    tool_history = []
+
+    # State Loaders
     if args.session and os.path.exists(args.session):
         try:
             with open(args.session, 'r', encoding='utf-8') as f:
@@ -709,8 +743,6 @@ async def async_main():
             print(f"\033[91m[!] Error loading session '{args.session}': {e}\033[0m", file=sys.stderr)
             sys.exit(1)
             
-    # Load usage tracker if provided
-    usage_tracker = {}
     if args.usage_file and os.path.exists(args.usage_file):
         try:
             with open(args.usage_file, 'r', encoding='utf-8') as f:
@@ -720,8 +752,6 @@ async def async_main():
             print(f"\033[91m[!] Error loading usage file '{args.usage_file}': {e}\033[0m", file=sys.stderr)
             sys.exit(1)
 
-    # Load tool session history if provided
-    tool_history = []
     if args.tool_session and os.path.exists(args.tool_session):
         try:
             with open(args.tool_session, 'r', encoding='utf-8') as f:
@@ -731,7 +761,7 @@ async def async_main():
             print(f"\033[91m[!] Error loading tool session '{args.tool_session}': {e}\033[0m", file=sys.stderr)
             sys.exit(1)
 
-    # 1. System Message (Only insert if not already present in the history)
+    # System Message
     if args.system and not any(m.get("role") == "system" for m in messages):
         try:
             with open(args.system, 'r', encoding='utf-8') as f:
@@ -741,28 +771,20 @@ async def async_main():
             print(f"\033[91m[!] Error reading system file '{args.system}': {e}\033[0m", file=sys.stderr)
             sys.exit(1)
 
-    # Process --assets folder(s) to dynamically populate args.images
+    # Process Initial Assets & Images
     if getattr(args, 'assets', None):
-        if args.images is None:
-            args.images = []
-            
+        if args.images is None: args.images = []
         for asset_dir in args.assets:
             if os.path.isdir(asset_dir):
                 print(f"\033[94m[*] Scanning assets folder: {asset_dir}...\033[0m", file=sys.stderr)
-                # Sort files to ensure deterministic ingestion order
                 for filename in sorted(os.listdir(asset_dir)):
                     filepath = os.path.join(asset_dir, filename)
                     if os.path.isfile(filepath):
                         ext = os.path.splitext(filename)[1].lower()
-                        if ext in ['.png', '.jpg', '.jpeg']:
-                            if filepath not in args.images:
-                                args.images.append(filepath)
-            else:
-                print(f"\033[93m[*] Warning: Asset path '{asset_dir}' is not a valid directory.\033[0m", file=sys.stderr)
+                        if ext in ['.png', '.jpg', '.jpeg'] and filepath not in args.images:
+                            args.images.append(filepath)
 
     user_content = []
-
-    # 2. Main Text Prompt
     prompt_text = ""
     
     if args.input:
@@ -774,31 +796,22 @@ async def async_main():
                 print(f"\033[91m[!] Error reading file '{args.input}': {e}\033[0m", file=sys.stderr)
                 sys.exit(1)
         else:
-            # If it's not a valid file path, treat it as a direct string prompt
             if len(args.input) < 256 and " " not in args.input and "." in args.input:
                 print(f"\033[93m[*] Warning: '{args.input}' looks like a filename but was not found. Treating as text prompt.\033[0m", file=sys.stderr)
             prompt_text = args.input
 
     if args.prompt:
-        if prompt_text:
-            prompt_text += "\n\n" + args.prompt
-        else:
-            prompt_text = args.prompt
+        if prompt_text: prompt_text += "\n\n" + args.prompt
+        else: prompt_text = args.prompt
 
     if prompt_text and prompt_text.strip():
         user_content.append({"type": "text", "text": prompt_text.strip()})
 
-    if not user_content:
-        print("\033[93m[!] Warning: The provided prompt content is empty.\033[0m", file=sys.stderr)
-
-    # 3. Images
     if args.images:
         for img_path in args.images:
             file_size = os.path.getsize(img_path)
-            # Add a warning for massive images which often cause endpoint processing failures or proxy drops
             if file_size > 15 * 1024 * 1024:
-                print(f"\033[93m[!] Warning: Image '{img_path}' is very large ({file_size / 1024 / 1024:.1f}MB). The server might reject it or hit memory limits.\033[0m", file=sys.stderr)
-                
+                print(f"\033[93m[!] Warning: Image '{img_path}' is very large ({file_size / 1024 / 1024:.1f}MB).\033[0m", file=sys.stderr)
             print(f"\033[94m[*] Encoding image: {img_path}...\033[0m", file=sys.stderr)
             try:
                 b64, mime = encode_image(img_path)
@@ -807,7 +820,8 @@ async def async_main():
                 print(f"\033[91m[!] Error processing image '{img_path}': {e}\033[0m", file=sys.stderr)
                 sys.exit(1)
 
-    messages.append({"role": "user", "content": user_content})
+    if user_content:
+        messages.append({"role": "user", "content": user_content})
 
     # MCP Setup Context
     async with AsyncExitStack() as stack:
@@ -824,14 +838,11 @@ async def async_main():
                 try:
                     if endpoint.startswith("http://") or endpoint.startswith("https://"):
                         kwargs = {}
-                        if mcp_api_key:
-                            kwargs["headers"] = {"Authorization": f"Bearer {mcp_api_key}"}
+                        if mcp_api_key: kwargs["headers"] = {"Authorization": f"Bearer {mcp_api_key}"}
 
-                        # Differentiate between Streamable HTTP and SSE based on the endpoint path
                         if endpoint.rstrip('/').endswith('/mcp'):
                             if streamablehttp_client is None:
                                 print(f"\033[91m[!] Error: 'streamablehttp_client' is not available in your 'mcp' library version.\033[0m", file=sys.stderr)
-                                print("\033[93m    Please update the package with: pip install -U mcp\033[0m", file=sys.stderr)
                                 sys.exit(1)
                             print(f"\033[94m[*] Initializing MCP Server (Streamable HTTP): {endpoint}\033[0m", file=sys.stderr)
                             transport = await stack.enter_async_context(streamablehttp_client(endpoint, **kwargs))
@@ -842,28 +853,21 @@ async def async_main():
                         print(f"\033[94m[*] Initializing MCP Server (Stdio): {endpoint}\033[0m", file=sys.stderr)
                         parts = shlex.split(endpoint)
                         
-                        # Handle stdio environment injection via --mcp-env-base
                         server_env = None
                         if mcp_env_base:
                             server_env = os.environ.copy()
-                            # Use {env_base}_ as prefix to target only specific config keys
                             prefix = f"{mcp_env_base}_" if not mcp_env_base.endswith('_') else mcp_env_base
                             mapped_count = 0
-                            
                             for k, v in os.environ.items():
                                 if k.startswith(prefix):
-                                    mapped_key = k[len(prefix):]
-                                    server_env[mapped_key] = v
+                                    server_env[k[len(prefix):]] = v
                                     mapped_count += 1
-                                    
                             if mapped_count > 0:
                                 print(f"\033[90m    - Injected {mapped_count} env vars mapped from prefix '{prefix}'\033[0m", file=sys.stderr)
                         
                         server_params = StdioServerParameters(command=parts[0], args=parts[1:], env=server_env)
                         transport = await stack.enter_async_context(stdio_client(server_params))
                     
-                    # Safely unpack read and write streams. This handles both older 2-tuple 
-                    # and newer 3-tuple formats returned by different MCP transports
                     read, write = transport[0], transport[1]
                     session = await stack.enter_async_context(ClientSession(read, write))
                     await session.initialize()
@@ -873,12 +877,8 @@ async def async_main():
                     
                     for t in mcp_tools.tools:
                         if t.name in tool_to_session:
-                            print(f"\033[93m    -> Warning: Tool '{t.name}' is overwritten by the current server.\033[0m", file=sys.stderr)
-                            # Remove the old tool from tools_list to avoid duplicate definitions
                             tools_list = [tool for tool in tools_list if tool.get("function", {}).get("name") != t.name]
-                            
                         tool_to_session[t.name] = session
-                        # Convert to standard OpenAI tool format for llama-server
                         tools_list.append({
                             "type": "function",
                             "function": {
@@ -888,30 +888,15 @@ async def async_main():
                             }
                         })
                 except BaseException as e:
-                    # By catching BaseException, we handle ExceptionGroup (from AnyIO), CancelledError, and normal Exceptions
-                    # Let SystemExits/KeyboardInterrupts pass freely
-                    if isinstance(e, (KeyboardInterrupt, SystemExit)):
-                        raise
-                    
-                    err_name = type(e).__name__
-                    err_msg = str(e)
-                    
+                    if isinstance(e, (KeyboardInterrupt, SystemExit)): raise
                     print(f"\033[93m[!] Warning: Unable to connect to MCP server '{endpoint}'.\033[0m", file=sys.stderr)
-                    print(f"\033[93m    The server might be offline or unreachable.\033[0m", file=sys.stderr)
-                    print(f"\033[93m    Details: [{err_name}] {err_msg}\033[0m", file=sys.stderr)
+                    print(f"\033[93m    Details: [{type(e).__name__}] {str(e)}\033[0m", file=sys.stderr)
                     raise
 
-        # Log tools if tool session tracking is enabled
         if args.tool_session:
-            tool_history.append({
-                "timestamp": time.time(),
-                "tools": tools_list
-            })
+            tool_history.append({"timestamp": time.time(), "tools": tools_list})
 
-        # Start the Chat Loop
-        interrupted = False
-        prompt_timeout_occurred = False
-        try:
+        async def run_single_turn(queue=None):
             chat_coro = chat_loop(
                 url=args.url,
                 messages=messages,
@@ -930,61 +915,174 @@ async def async_main():
                 no_spinner=args.no_spinner,
                 output_file=args.output,
                 reasoning_effort=args.reasoning_effort,
-                include_thoughts=args.include_thoughts
+                include_thoughts=args.include_thoughts,
+                stream_queue=queue
             )
-            
             if args.prompt_timeout and args.prompt_timeout > 0:
                 await asyncio.wait_for(chat_coro, timeout=args.prompt_timeout)
             else:
                 await chat_coro
-                
-        except (asyncio.TimeoutError, TimeoutError):
-            print("\n\n\033[91mError: Prompt timeout\033[0m", file=sys.stderr)
-            prompt_timeout_occurred = True
-        except KeyboardInterrupt:
-            print("\n\n\033[93m[!] Generation interrupted by user.\033[0m", file=sys.stderr)
-            interrupted = True
-        except BaseException as e:
-            if isinstance(e, SystemExit):
-                raise
-            err_name = type(e).__name__
-            err_msg = str(e)
-            print(f"\n\033[91m[!] Unexpected error during chat execution: [{err_name}] {err_msg}\033[0m", file=sys.stderr)
+
+        # 1. Process Initial Prompt if supplied via args
+        if user_content:
+            try:
+                await run_single_turn()
+            except BaseException as e:
+                if isinstance(e, SystemExit): raise
+                print(f"\n\033[91m[!] Execution error: {e}\033[0m", file=sys.stderr)
+                if not args.interactive and not args.api_port:
+                    sys.exit(1)
+
+        # Helper to Save State
+        def save_state():
+            if args.session:
+                try:
+                    with open(args.session, 'w', encoding='utf-8') as f: json.dump(messages, f, indent=2)
+                except Exception: pass
+            if args.usage_file and usage_tracker:
+                try:
+                    with open(args.usage_file, 'w', encoding='utf-8') as f: json.dump(usage_tracker, f, indent=2)
+                except Exception: pass
+            if args.tool_session:
+                try:
+                    with open(args.tool_session, 'w', encoding='utf-8') as f: json.dump(tool_history, f, indent=2)
+                except Exception: pass
+
+        # 2. Run API Server Mode
+        if args.api_port:
+            if not AIOHTTP_AVAILABLE:
+                print("\n\033[91m[!] Error: 'aiohttp' is required for the GUI API mode.\033[0m", file=sys.stderr)
+                print("\033[93m    Please install it using: pip install aiohttp\033[0m", file=sys.stderr)
+                sys.exit(1)
+
+            # Set client_max_size to 32 MB (32 * 1024 * 1024 bytes)
+            app = web.Application(client_max_size=(32*1024*1024))      
+
+            async def api_chat(request):
+                data = await request.json()
+                prompt = data.get("prompt", "")
+                images = data.get("images", []) # List of dicts: {"b64": "...", "mime": "image/jpeg"}
+
+                turn_content = []
+                if prompt:
+                    turn_content.append({"type": "text", "text": prompt})
+                for img in images:
+                    turn_content.append({"type": "image_url", "image_url": {"url": img}})
+
+                if not turn_content:
+                    return web.Response(status=400, text="Empty prompt or images list")
+
+                messages.append({"role": "user", "content": turn_content})
+
+                response = web.StreamResponse(
+                    status=200,
+                    reason='OK',
+                    headers={
+                        'Content-Type': 'text/event-stream',
+                        'Cache-Control': 'no-cache',
+                        'Connection': 'keep-alive',
+                    }
+                )
+                await response.prepare(request)
+
+                stream_queue = asyncio.Queue()
+
+                async def bg_chat():
+                    try:
+                        await run_single_turn(stream_queue)
+                    except Exception as e:
+                        await stream_queue.put({"type": "error", "error": str(e)})
+                    finally:
+                        await stream_queue.put({"type": "done"})
+
+                chat_task = asyncio.create_task(bg_chat())
+
+                try:
+                    while True:
+                        msg = await stream_queue.get()
+                        if msg["type"] == "done":
+                            break
+                        await response.write(f"data: {json.dumps(msg)}\n\n".encode('utf-8'))
+                except ConnectionResetError:
+                    pass # Client disconnected during stream
+                finally:
+                    save_state()
+
+                await response.write(b"data: [DONE]\n\n")
+                return response
+
+            async def api_history(request):
+                return web.json_response({"messages": messages})
+
+            async def api_clear(request):
+                sys_msg = [m for m in messages if m.get("role") == "system"]
+                messages.clear()
+                messages.extend(sys_msg)
+                save_state()
+                return web.json_response({"status": "cleared"})
+
+            app.add_routes([
+                web.post('/chat', api_chat),
+                web.get('/history', api_history),
+                web.post('/clear', api_clear)
+            ])
+
+            runner = web.AppRunner(app)
+
+            # Setup CORS on all routes
+            cors = aiohttp_cors.setup(app, defaults={
+                "*": aiohttp_cors.ResourceOptions(
+                    allow_credentials=True,
+                    expose_headers="*",
+                    allow_headers="*"
+                )
+            })
+
+            for route in list(app.router.routes()):
+                cors.add(route)
+
+            await runner.setup()
+            site = web.TCPSite(runner, args.api_host, args.api_port)
+            await site.start()
             
-        # Save session history (even if timeout/interrupted to keep context generated so far)
-        if args.session:
+            print(f"\n\033[92m[*] GUI API Server listening on http://{args.api_host}:{args.api_port}\033[0m", file=sys.stderr)
+            print(f"\033[90m    - Endpoints: POST /chat, GET /history, POST /clear\033[0m", file=sys.stderr)
+            
             try:
-                with open(args.session, 'w', encoding='utf-8') as f:
-                    json.dump(messages, f, indent=2)
-                print(f"\n\033[94m[*] Chat session saved to {args.session}\033[0m", file=sys.stderr)
-            except Exception as e:
-                print(f"\n\033[91m[!] Error saving session: {e}\033[0m", file=sys.stderr)
+                # Keep server alive indefinitely
+                while True:
+                    await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                pass
+            finally:
+                await runner.cleanup()
 
-        # Save usage tracking
-        if args.usage_file and usage_tracker:
-            try:
-                with open(args.usage_file, 'w', encoding='utf-8') as f:
-                    json.dump(usage_tracker, f, indent=2)
-                print(f"\033[94m[*] Token usage saved to {args.usage_file}\033[0m", file=sys.stderr)
-            except Exception as e:
-                print(f"\033[91m[!] Error saving usage tracking: {e}\033[0m", file=sys.stderr)
-
-        # Save tool session history
-        if args.tool_session:
-            try:
-                with open(args.tool_session, 'w', encoding='utf-8') as f:
-                    json.dump(tool_history, f, indent=2)
-                print(f"\033[94m[*] Tool schemas logged to {args.tool_session}\033[0m", file=sys.stderr)
-            except Exception as e:
-                print(f"\033[91m[!] Error saving tool session: {e}\033[0m", file=sys.stderr)
-                
-        if prompt_timeout_occurred:
-            sys.exit(1)
-        if interrupted:
-            sys.exit(0)
+        # 3. Run Terminal Interactive Mode
+        elif args.interactive:
+            print("\n\033[92m[*] Entering Interactive Mode. Type 'exit' or 'quit' to stop.\033[0m", file=sys.stderr)
+            while True:
+                try:
+                    user_input = await asyncio.get_event_loop().run_in_executor(None, input, "\n\033[92mYou:\033[0m ")
+                    if not user_input.strip():
+                        continue
+                    if user_input.strip().lower() in ['exit', 'quit']:
+                        break
+                        
+                    messages.append({"role": "user", "content": [{"type": "text", "text": user_input.strip()}]})
+                    await run_single_turn()
+                    save_state()
+                    
+                except (KeyboardInterrupt, EOFError):
+                    print("\n\033[93m[!] Interactive session ended.\033[0m", file=sys.stderr)
+                    break
+                except Exception as e:
+                    print(f"\n\033[91m[!] Error: {e}\033[0m", file=sys.stderr)
+        
+        else:
+            # Single shot mode already ran above, just save
+            save_state()
 
 def main():
-    # Force UTF-8 encoding for standard output and error to prevent UnicodeEncodeError on Windows/legacy terminals
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     if hasattr(sys.stderr, 'reconfigure'):
@@ -993,11 +1091,9 @@ def main():
     try:
         asyncio.run(async_main())
     except KeyboardInterrupt:
-        # Fallback in case exception bubbles outside async_main
-        print("\n\n\033[93m[!] Generation interrupted by user.\033[0m", file=sys.stderr)        
+        print("\n\n\033[93m[!] Execution interrupted by user.\033[0m", file=sys.stderr)        
         sys.exit(1)
     except SystemExit as e:
-        # Gracefully handle normal SystemExits (from sys.exit)
         sys.exit(e.code)
     except BaseException as e:
         sys.exit(1)

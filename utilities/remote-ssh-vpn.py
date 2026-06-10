@@ -9,6 +9,7 @@ import threading
 import time
 import sys
 import logging
+import socket
 import paramiko
 
 # Configure logging
@@ -38,6 +39,7 @@ class ForwardHandler(socketserver.BaseRequestHandler):
         except Exception:
             peer_name = ("unknown", 0)
 
+        chan = None
         try:
             # Request a port forwarding channel from the SSH server
             chan = self.server.ssh_transport.open_channel(
@@ -55,23 +57,40 @@ class ForwardHandler(socketserver.BaseRequestHandler):
 
         logging.debug(f"Tunnel open: {peer_name} -> local:{self.server.server_address[1]} -> remote:{self.server.chain_host}:{self.server.chain_port}")
         
-        # Bridge the local socket and the SSH channel
-        while True:
-            r, w, x = select.select([self.request, chan], [], [])
-            if self.request in r:
-                data = self.request.recv(1024)
-                if len(data) == 0:
-                    break
-                chan.send(data)
-            if chan in r:
-                data = chan.recv(1024)
-                if len(data) == 0:
-                    break
-                self.request.send(data)
-                
-        chan.close()
-        self.request.close()
-        logging.debug(f"Tunnel closed: {peer_name}")
+        try:
+            # Bridge the local socket and the SSH channel
+            while True:
+                # Use select with a 5-second timeout to allow periodic health checks
+                r, w, x = select.select([self.request, chan], [], [], 5.0)
+                if not r:
+                    # Check if the transport underlying the channel is still alive
+                    if not self.server.ssh_transport.is_active():
+                        break
+                    continue
+
+                if self.request in r:
+                    data = self.request.recv(1024)
+                    if len(data) == 0:
+                        break
+                    chan.sendall(data)
+                if chan in r:
+                    data = chan.recv(1024)
+                    if len(data) == 0:
+                        break
+                    self.request.sendall(data)
+        except Exception as e:
+            logging.debug(f"Tunnel exception on connection {peer_name}: {e}")
+        finally:
+            if chan:
+                try:
+                    chan.close()
+                except Exception:
+                    pass
+            try:
+                self.request.close()
+            except Exception:
+                pass
+            logging.debug(f"Tunnel closed: {peer_name}")
 
 
 def keep_alive_monitor(client, interval, stop_event, error_event):
@@ -80,23 +99,31 @@ def keep_alive_monitor(client, interval, stop_event, error_event):
     If it fails, it triggers the error_event to initiate a reconnection.
     """
     logging.info(f"Keep-alive monitor started (Interval: {interval}s)")
-    transport = client.get_transport()
-    
-    while not stop_event.is_set():
-        # Wait for the interval, but allow quick interruption if stop_event is set
-        stop_event.wait(interval)
-        if stop_event.is_set():
-            break
-            
-        try:
-            # Send a global request to keep the connection alive
-            # This is more lightweight than executing a full shell command
-            transport.send_ignore()
-            logging.debug("Keep-alive packet sent successfully.")
-        except Exception as e:
-            logging.error(f"Keep-alive failed, connection appears dead: {e}")
+    try:
+        transport = client.get_transport()
+        if not transport:
             error_event.set()
-            break
+            return
+        
+        while not stop_event.is_set():
+            # Wait for the interval, but allow quick interruption if stop_event is set
+            stop_event.wait(interval)
+            if stop_event.is_set():
+                break
+                
+            try:
+                if not transport.is_active():
+                    raise socket.error("SSH transport is inactive.")
+                # Send a global request to keep the connection alive
+                transport.send_ignore()
+                logging.debug("Keep-alive packet sent successfully.")
+            except Exception as e:
+                logging.error(f"Keep-alive failed, connection appears dead: {e}")
+                error_event.set()
+                break
+    except Exception as e:
+        logging.error(f"Keep-alive monitor exception: {e}")
+        error_event.set()
 
 
 def parse_forward_rule(rule):
@@ -120,7 +147,7 @@ def run_client(args):
     Returns True if successful and running, False if a critical error occurred.
     """
     client = paramiko.SSHClient()
-    # Automatically add unknown host keys (Note: in high security envs, you might want to remove this)
+    # Automatically add unknown host keys
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     
     servers = []
@@ -148,6 +175,9 @@ def run_client(args):
 
         # Setup local port forwarding
         transport = client.get_transport()
+        if transport is None:
+            raise paramiko.SSHException("Failed to obtain SSH transport layer.")
+
         for rule in args.forward:
             local_port, remote_host, remote_port = parse_forward_rule(rule)
             
@@ -174,11 +204,15 @@ def run_client(args):
         monitor_thread.daemon = True
         monitor_thread.start()
 
-        # Main thread simply waits for an error (connection drop) or a KeyboardInterrupt
+        # Monitor connection active state
         while not error_event.is_set():
+            if not transport.is_active():
+                logging.warning("SSH transport dropped active status.")
+                error_event.set()
+                break
             time.sleep(1)
 
-        # If we reach here, error_event was set by the monitor thread
+        # If we reach here, connection dropped
         return False
 
     except paramiko.AuthenticationException:
@@ -192,12 +226,24 @@ def run_client(args):
         return False
         
     finally:
-        # Cleanup routine
+        # Cleanup routine to allow fresh reconnect
         stop_event.set()
+        
+        # Shutdown and close port-forwarding sockets
         for server in servers:
-            server.shutdown()
-            server.server_close()
-        client.close()
+            try:
+                server.shutdown()
+                server.server_close()
+            except Exception as e:
+                logging.debug(f"Error shutting down forwarding server: {e}")
+        
+        # Shut down SSH client cleanly
+        try:
+            client.close()
+        except Exception as e:
+            logging.debug(f"Error closing SSH client: {e}")
+            
+        # Join keep-alive thread
         if monitor_thread:
             monitor_thread.join(timeout=2)
 
@@ -222,8 +268,8 @@ def main():
     )
     
     parser.add_argument("-K", "--keep-alive", type=int, default=30, help="Keep-alive interval in seconds (default: 30)")
-    parser.add_argument("-R", "--retries", type=int, default=5, help="Number of times to retry connecting if dropped. Set to -1 for infinite. (default: 5)")
-    parser.add_argument("-D", "--delay", type=int, default=5, help="Delay in seconds between reconnect attempts (default: 5)")
+    parser.add_argument("-R", "--retries", type=int, default=-1, help="Number of times to retry connecting if dropped. Set to -1 for infinite. (default: -1)")
+    parser.add_argument("-D", "--delay", type=int, default=30, help="Initial delay in seconds between reconnect attempts. Increases by 10s on consecutive failures (default: 30)")
 
     args = parser.parse_args()
 
@@ -231,19 +277,34 @@ def main():
     max_retries = args.retries
 
     while True:
+        start_time = time.time()
         success = run_client(args)
+        duration = time.time() - start_time
         
         # If run_client returns, the connection dropped (or failed to establish)
         if success is False:
+            # If the connection survived and stayed stable for at least 30 seconds,
+            # we reset consecutive failures back to 0.
+            if duration > 30:
+                if attempts > 0:
+                    logging.info("Connection was stable. Resetting backoff attempt counter.")
+                attempts = 0
+
             if max_retries != -1 and attempts >= max_retries:
                 logging.error(f"Maximum retry limit ({max_retries}) reached. Exiting.")
                 sys.exit(1)
                 
+            # Wait time starts at args.delay (30s) and increases by 10s on each consecutive fail
+            current_delay = args.delay + (attempts * 10)
             attempts += 1
-            logging.warning(f"Connection dropped. Reconnecting in {args.delay} seconds... (Attempt {attempts} of {'infinity' if max_retries == -1 else max_retries})")
-            time.sleep(args.delay)
+            
+            logging.warning(
+                f"Connection dropped. Reconnecting in {current_delay} seconds... "
+                f"(Attempt {attempts} of {'infinity' if max_retries == -1 else max_retries})"
+            )
+            time.sleep(current_delay)
         else:
-            # Should only happen on clean exit
+            # Clean exit
             break
 
 if __name__ == "__main__":

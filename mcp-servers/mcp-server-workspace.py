@@ -10,6 +10,8 @@ import uvicorn
 import argparse
 import itertools
 import base64
+import datetime
+import shutil
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
@@ -224,8 +226,8 @@ mcp = FastMCP(MCP_NAME, stateless_http=True, json_response=False)
 # Only register write functionality if not in read-only mode
 if not READ_ONLY:
 
-    @mcp.tool(name=f"{TOOL_PREFIX}write_file_contents")
-    async def write_file_contents(filename: str, text: str) -> str:
+    @mcp.tool(name=f"{TOOL_PREFIX}write")
+    async def tool_write(filename: str, text: str) -> str:
         """Write file contents (only text)."""        
         try:
             filepath = get_safe_path(WORKSPACE_DIR, filename)
@@ -240,8 +242,65 @@ if not READ_ONLY:
             return f"Error: An unexpected system error occurred. {str(e)}"        
         return f"Successfully wrote {len(text)} characters to '{filename}'."
 
+    @mcp.tool(name=f"{TOOL_PREFIX}create_directory")
+    async def tool_create_directory(path: str) -> str:
+        """Creates a new directory (supports recursive creation)"""
+        try:
+            dirpath = get_safe_path(WORKSPACE_DIR, path)
+            Path(dirpath).mkdir(parents=True, exist_ok=True)
+        except FileNotFoundError:
+            return f"Error: The system cannot find the path specified for '{path}'."
+        except PermissionError as e:
+            return f"Error: Permission denied. {str(e)}"
+        except Exception as e:
+            return f"Error: An unexpected system error occurred. {str(e)}"
+        return f"Successfully created directory '{path}'."
+
+    @mcp.tool(name=f"{TOOL_PREFIX}append")
+    async def tool_append(filename: str, text: str) -> str:
+        """Append text to a file."""
+        try:
+            filepath = get_safe_path(WORKSPACE_DIR, filename)
+            # Ensure parent directories exist
+            Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+            with open(filepath, "a", encoding="utf8") as f:
+                f.write(text)
+        except FileNotFoundError:
+            return f"Error: The system cannot find the path specified for '{filename}'."
+        except PermissionError as e:
+            return f"Error: Permission denied. {str(e)}"
+        except Exception as e:
+            return f"Error: An unexpected system error occurred. {str(e)}"
+        return f"Successfully appended {len(text)} characters to '{filename}'."
+
+    @mcp.tool(name=f"{TOOL_PREFIX}copy")
+    async def tool_copy(source: str, destination: str) -> str:
+        """Copy a file."""
+        try:
+            source_path = get_safe_path(WORKSPACE_DIR, source)
+            dest_path = get_safe_path(WORKSPACE_DIR, destination)
+
+            if not os.path.exists(source_path):
+                return f"Error: The source file '{source}' does not exist."
+
+            # Ensure the parent directories of the destination exist
+            Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
+
+            shutil.copy2(source_path, dest_path)
+        except FileNotFoundError:
+            return f"Error: The system cannot find the path specified."
+        except FileExistsError:
+            return f"Error: The destination path '{destination}' already exists."
+        except PermissionError as e:
+            return f"Error: Permission denied. {str(e)}"
+        except OSError as e:
+            return f"Error: OS error occurred. {str(e)}"
+        except Exception as e:
+            return f"Error: An unexpected system error occurred. {str(e)}"
+        return f"Successfully copied '{source}' to '{destination}'."
+
     @mcp.tool(name=f"{TOOL_PREFIX}apply_diff")
-    async def apply_diff(filename: str, text: str) -> str:
+    async def tool_apply_diff(filename: str, text: str) -> str:
         """Apply standard unified diff to file."""
         try:
             filepath = get_safe_path(WORKSPACE_DIR, filename)
@@ -255,8 +314,8 @@ if not READ_ONLY:
             return f"Error: An unexpected system error occurred. {str(e)}"
         return "Diff applied successfully."
 
-    @mcp.tool(name=f"{TOOL_PREFIX}replace_text_in_file")
-    async def replace_text_in_file(filename: str, text: str, new_text: str) -> str:
+    @mcp.tool(name=f"{TOOL_PREFIX}replace_text")
+    async def tool_replace_text(filename: str, text: str, new_text: str) -> str:
         """Replace specific occurrences of text in a file with new text."""        
         try:
             # Resolve the safe path
@@ -293,12 +352,15 @@ if not READ_ONLY:
         
         return f"Successfully replaced {occurrences} occurrence(s) of text in '{filename}'."
 
-    @mcp.tool(name=f"{TOOL_PREFIX}delete_file")
-    async def delete_file(filename: str) -> str:
-        """Delete file"""        
+    @mcp.tool(name=f"{TOOL_PREFIX}delete")
+    async def tool_delete(filename: str) -> str:
+        """Delete file or directory"""        
         try:
             filepath = get_safe_path(WORKSPACE_DIR, filename)
             if os.path.exists(filepath):
+                if os.path.isdir(filepath):
+                    shutil.rmtree(filepath)
+                else:
                     os.remove(filepath)
         except FileNotFoundError:
             return f"Error: The system cannot find the path specified for '{filename}'."
@@ -306,14 +368,64 @@ if not READ_ONLY:
             return f"Error: Permission denied. {str(e)}"
         except Exception as e:
             return f"Error: An unexpected system error occurred. {str(e)}"        
-        return f"Successfully deleted file '{filename}'."
+        return f"Successfully deleted '{filename}'."
+
+    @mcp.tool(name=f"{TOOL_PREFIX}rename")
+    async def tool_rename(source: str, destination: str) -> str:
+        """Rename or move a file."""
+        try:
+            # Get safe paths for both source and destination
+            source_path = get_safe_path(WORKSPACE_DIR, source)
+            dest_path = get_safe_path(WORKSPACE_DIR, destination)
+
+            if not os.path.exists(source_path):
+                return f"Error: The source file '{source}' does not exist."
+
+            # Ensure the parent directories of the destination exist
+            Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
+
+            os.rename(source_path, dest_path)
+        except FileNotFoundError:
+            return f"Error: The system cannot find the path specified."
+        except FileExistsError:
+            return f"Error: The destination path '{destination}' already exists."
+        except PermissionError as e:
+            return f"Error: Permission denied. {str(e)}"
+        except OSError as e:
+            return f"Error: OS error occurred. {str(e)}"
+        except Exception as e:
+            return f"Error: An unexpected system error occurred. {str(e)}"        
+        return f"Successfully renamed '{source}' to '{destination}'."
 
 # ---
 
 
-@mcp.tool(name=f"{TOOL_PREFIX}read_file_contents")
-async def read_file_contents(filename: str) -> Any:
-    """Read file contents (text or image)."""
+@mcp.tool(name=f"{TOOL_PREFIX}file_info")
+async def tool_file_info(filename: str) -> dict:
+    """Returns metadata"""
+    try:
+        filepath = get_safe_path(WORKSPACE_DIR, filename)
+        if not os.path.exists(filepath):
+            return {"error": f"File not found: {filename}"}
+        
+        stat = os.stat(filepath)
+        return {
+            "filename": filename,
+            "size_bytes": stat.st_size,
+            "created": datetime.datetime.fromtimestamp(stat.st_ctime).isoformat(),
+            "modified": datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            "is_directory": os.path.isdir(filepath),
+            "is_file": os.path.isfile(filepath)
+        }
+    except PermissionError as e:
+        return {"error": f"Permission denied: {str(e)}"}
+    except Exception as e:
+        return {"error": f"An unexpected error occurred: {str(e)}"}
+
+
+@mcp.tool(name=f"{TOOL_PREFIX}read")
+async def tool_read_file(filename: str) -> Any:
+    """Read a text file."""
     text = ""
     try:
         filepath = get_safe_path(WORKSPACE_DIR, filename)
@@ -321,15 +433,7 @@ async def read_file_contents(filename: str) -> Any:
         ext = os.path.splitext(filepath)[1].lower()
         is_image = ext in [".png", ".jpeg", ".jpg"]
         if is_image:
-            imageFormat = "jpeg" if ext in [".jpeg", ".jpg"] else "png"
-            with open(filepath, "rb") as f:
-                data = f.read()
-                b64_data = base64.b64encode(data).decode("utf-8")
-                return ImageContent(
-                    type="image",
-                    data=b64_data,
-                    mimeType=f"image/{imageFormat.lower()}",
-                )
+            return f"Error: It's an image file."
         
         with open(filepath, "r", encoding="utf8") as f:
             text = f.read()
@@ -341,10 +445,69 @@ async def read_file_contents(filename: str) -> Any:
         return f"Error: An unexpected system error occurred. {str(e)}"
     return text
 
+@mcp.tool(name=f"{TOOL_PREFIX}read_image")
+async def tool_read_image(filename: str) -> Any:
+    """Read an image file."""
+    text = ""
+    try:
+        filepath = get_safe_path(WORKSPACE_DIR, filename)
 
-@mcp.tool(name=f"{TOOL_PREFIX}list_files")
-async def list_files() -> List[str]:
-    """List files."""
+        ext = os.path.splitext(filepath)[1].lower()
+        is_image = ext in [".png", ".jpeg", ".jpg"]
+        if not is_image:
+            return f"Error: It's a text file."
+        
+        imageFormat = "jpeg" if ext in [".jpeg", ".jpg"] else "png"
+        with open(filepath, "rb") as f:
+            data = f.read()
+            b64_data = base64.b64encode(data).decode("utf-8")
+            return ImageContent(
+                type="image",
+                data=b64_data,
+                mimeType=f"image/{imageFormat.lower()}",
+            )
+                
+    except FileNotFoundError:
+        return f"Error: File not found. The path '{filename}' does not exist."
+    except PermissionError as e:
+        return f"Error: Permission denied. {str(e)}"
+    except Exception as e:
+        return f"Error: An unexpected system error occurred. {str(e)}"
+    return text
+
+
+@mcp.tool(name=f"{TOOL_PREFIX}read_with_line_numbers")
+async def tool_read_with_line_numbers(filename: str) -> str:
+    """
+    Reads a text file with line numbers prepended.    
+    """
+    try:
+        filepath = get_safe_path(WORKSPACE_DIR, filename)
+        
+        # Prevent attempting to read binary file extensions
+        ext = os.path.splitext(filepath)[1].lower()
+        if ext in [".png", ".jpeg", ".jpg", ".gif", ".bmp", ".ico", ".pdf", ".zip", ".tar", ".gz", ".7z", ".exe", ".dll", ".so", ".dylib", ".bin"]:
+            return f"Error: '{filename}' appears to be a binary file. This tool only supports text files."
+
+        lines_with_numbers = []
+        with open(filepath, "r", encoding="utf-8") as f:
+            for line_num, line in enumerate(f, 1):
+                lines_with_numbers.append(f"{line_num}:\t{line.rstrip('\r\n')}")
+        
+        return "\n".join(lines_with_numbers)
+    except UnicodeDecodeError:
+         return f"Error: File '{filename}' is not a valid UTF-8 text file."
+    except FileNotFoundError:
+        return f"Error: File not found. The path '{filename}' does not exist."
+    except PermissionError as e:
+        return f"Error: Permission denied. {str(e)}"
+    except Exception as e:
+        return f"Error: An unexpected system error occurred. {str(e)}"
+
+
+@mcp.tool(name=f"{TOOL_PREFIX}list")
+async def tool_list() -> List[str]:
+    """Returns a list of files and subdirectories in a path."""
     try:
         myPath = WORKSPACE_DIR
         if not os.path.exists(myPath):
@@ -372,8 +535,8 @@ async def list_files() -> List[str]:
     return retV
 
 
-@mcp.tool(name=f"{TOOL_PREFIX}search_files")
-async def search_files(pattern: str = "*") -> List[str]:
+@mcp.tool(name=f"{TOOL_PREFIX}search")
+async def tool_search(pattern: str = "*") -> List[str]:
     """Search files by filename pattern."""
     try:
         myPath = WORKSPACE_DIR
@@ -405,9 +568,9 @@ async def search_files(pattern: str = "*") -> List[str]:
     return retV
 
 
-@mcp.tool(name=f"{TOOL_PREFIX}read_file_lines")
-async def read_file_lines(filename: str, offset: int, count: int = 2000) -> str:
-    """Read file content by count lines from line at offset."""
+@mcp.tool(name=f"{TOOL_PREFIX}read_lines")
+async def tool_read_lines(filename: str, offset: int, count: int = 2000) -> str:
+    """Read text file content by count lines from line at offset."""
     try:
         filepath = get_safe_path(WORKSPACE_DIR, filename)
         return read_file_chunk(filepath, offset, count)
@@ -419,11 +582,11 @@ async def read_file_lines(filename: str, offset: int, count: int = 2000) -> str:
         return f"Error: An unexpected system error occurred. {str(e)}"
 
 
-@mcp.tool(name=f"{TOOL_PREFIX}grep_files")
-async def grep_files(pattern: str, file_pattern: str = "*") -> List[str]:
+@mcp.tool(name=f"{TOOL_PREFIX}grep")
+async def tool_grep(pattern: str, file_pattern: str = "*") -> List[str]:
     """
     Search the contents of files for a given text or regex pattern.
-    Returns a list of relative file paths that contain the pattern.
+    Returns a list of matching lines formatted as 'relative_filepath\tline_number\tline_content'.
 
     Args:
         pattern: The text or regular expression to search for inside files.
@@ -462,7 +625,7 @@ async def grep_files(pattern: str, file_pattern: str = "*") -> List[str]:
                 try:
                     # Open and read file line by line to keep memory usage low
                     with open(full_path, "r", encoding="utf-8") as file:
-                        for line in file:
+                        for line_num, line in enumerate(file, 1):
                             match_found = False
 
                             if is_regex:
@@ -473,8 +636,8 @@ async def grep_files(pattern: str, file_pattern: str = "*") -> List[str]:
                                     match_found = True
 
                             if match_found:
-                                retV.append(rel_path)
-                                break  # We found a match, no need to read the rest of this file
+                                # Return format: file_path\tline_number\tline_content
+                                retV.append(f"{rel_path}\t{line_num}:\t{line.rstrip('\r\n')}")
 
                 except UnicodeDecodeError:
                     # Gracefully skip binary files or files with unsupported encodings
@@ -489,7 +652,7 @@ async def grep_files(pattern: str, file_pattern: str = "*") -> List[str]:
         return [f"Error: Permission denied. {str(e)}"]
     except Exception as e:
         return [f"Error: An unexpected system error occurred. {str(e)}"]
-
+   
     return retV
 
 

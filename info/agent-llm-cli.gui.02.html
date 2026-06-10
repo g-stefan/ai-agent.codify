@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full antialiased">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Terminal Client</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Use a good monospace font -->
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            background-color: #050505; /* Deep black */
+            color: #22c55e; /* Tailwind green-500 */
+        }
+
+        /* Blocky terminal scrollbar */
+        ::-webkit-scrollbar {
+            width: 12px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #050505;
+            border-left: 1px solid #14532d;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #166534;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #22c55e;
+        }
+        
+        .message-content p { margin-bottom: 0.5rem; }
+        .message-content p:last-child { margin-bottom: 0; }
+        
+        .message-content pre {
+            background-color: #0a0a0a;
+            color: #d1d5db; /* gray-300 */
+            padding: 0.75rem;
+            border: 1px solid #14532d; /* green-900 */
+            border-left: 4px solid #22c55e;
+            overflow-x: auto;
+            margin-top: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .message-content code {
+            background-color: rgba(34, 197, 94, 0.1);
+            color: #4ade80;
+            padding: 0.125rem 0.25rem;
+        }
+        .message-content pre code {
+            background-color: transparent;
+            color: inherit;
+            padding: 0;
+        }
+
+        .blinking-cursor::after {
+            content: '█';
+            display: inline-block;
+            animation: blink 1s step-end infinite;
+            margin-left: 4px;
+            color: #22c55e;
+            vertical-align: text-bottom;
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+        }
+
+        /* Image preview styling */
+        .image-preview-wrapper {
+            position: relative;
+            display: inline-block;
+        }
+        .remove-image-btn {
+            position: absolute;
+            top: -5px;
+            right: -5px;
+            background-color: #050505;
+            color: #ef4444;
+            border: 1px solid #ef4444;
+            cursor: pointer;
+            font-size: 10px;
+            padding: 0 4px;
+        }
+        .remove-image-btn:hover {
+            background-color: #ef4444;
+            color: #050505;
+        }
+
+        /* Remove default detail marker */
+        details > summary {
+            list-style: none;
+        }
+        details > summary::-webkit-details-marker {
+            display: none;
+        }
+    </style>
+</head>
+<body class="h-full flex flex-col selection:bg-green-900 selection:text-white text-sm sm:text-base">
+
+    <header class="border-b border-green-900 p-3 flex flex-col md:flex-row justify-between items-start md:items-center bg-black z-10 gap-3">
+        <div>
+            <span class="text-green-600 font-bold">root@server:~#</span> <span class="text-gray-300">./start_ai_client.sh</span>
+        </div>
+        
+        <div class="flex flex-wrap items-center gap-3 text-xs sm:text-sm">
+            <div class="flex items-center">
+                <span class="text-green-700 mr-2">HOST=</span>
+                <input type="text" id="server-url" value="http://localhost:8080" class="bg-gray-900 text-green-400 border border-green-800 px-2 py-1 outline-none focus:border-green-500 focus:bg-black w-48 transition-colors">
+                <button id="connect-btn" class="border border-green-800 border-l-0 hover:bg-green-900 hover:text-white text-green-500 px-3 py-1 transition-colors">
+                    [CONNECT]
+                </button>
+            </div>
+
+            <button id="clear-btn" class="text-red-500 hover:bg-red-900 hover:text-white px-2 py-1 border border-transparent transition-colors">
+                [CLEAR_LOG]
+            </button>
+        </div>
+    </header>
+
+    <main class="flex-1 overflow-hidden flex flex-col relative w-full mx-auto">
+        
+        <!-- Terminal Error/Notification Toast -->
+        <div id="toast" class="absolute top-4 left-1/2 transform -translate-x-1/2 border px-4 py-2 hidden z-50 transition-opacity duration-300 opacity-0 bg-black shadow-lg shadow-black" role="alert">
+            <span id="toast-prefix" class="font-bold mr-2"></span>
+            <span id="toast-message" class="text-gray-300"></span>
+        </div>
+
+        <!-- Chat Output Logs -->
+        <div id="chat-container" class="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 scroll-smooth break-words">
+            <!-- Greeting injected by JS -->
+        </div>
+
+        <div class="border-t border-green-900 bg-black p-4 relative shrink-0">
+            
+            <div id="image-preview-container" class="flex flex-wrap gap-4 mb-4 hidden border border-dashed border-green-900 p-2">
+                <!-- Previews injected here -->
+            </div>
+
+            <form id="chat-form" class="flex items-start gap-2">
+                
+                <input type="file" id="file-upload" accept="image/*" multiple class="hidden">
+                
+                <div class="text-blue-400 font-bold mt-[2px] shrink-0 whitespace-nowrap">user@local:~$</div>
+                
+                <div class="flex-1 relative">
+                    <textarea id="message-input" rows="1" class="w-full bg-transparent text-gray-200 outline-none resize-none overflow-hidden placeholder-green-900 leading-normal" placeholder="enter command or prompt..." style="min-height: 24px; max-height: 200px;"></textarea>
+                </div>
+
+                <div class="flex shrink-0 gap-2 text-xs sm:text-sm mt-1">
+                    <button type="button" id="upload-btn" class="text-yellow-500 hover:bg-yellow-900 hover:text-white px-2 border border-transparent transition-colors" title="Attach Images">
+                        [IMG]
+                    </button>
+                    <button type="submit" id="send-btn" class="text-green-500 hover:bg-green-900 hover:text-white px-2 border border-transparent transition-colors" title="Execute">
+                        [SEND]
+                    </button>
+                    <button type="button" id="stop-btn" class="text-red-500 hover:bg-red-900 hover:text-white px-2 border border-red-900 transition-colors hidden" title="Interrupt">
+                        [CTRL+C]
+                    </button>
+                </div>
+            </form>
+        </div>
+    </main>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const chatContainer = document.getElementById('chat-container');
+            const chatForm = document.getElementById('chat-form');
+            const messageInput = document.getElementById('message-input');
+            const sendBtn = document.getElementById('send-btn');
+            const stopBtn = document.getElementById('stop-btn');
+            const fileUpload = document.getElementById('file-upload');
+            const uploadBtn = document.getElementById('upload-btn');
+            const imagePreviewContainer = document.getElementById('image-preview-container');
+            const clearBtn = document.getElementById('clear-btn');
+            const serverUrlInput = document.getElementById('server-url');
+            const connectBtn = document.getElementById('connect-btn');
+            const toast = document.getElementById('toast');
+            const toastPrefix = document.getElementById('toast-prefix');
+            const toastMessage = document.getElementById('toast-message');
+
+            let selectedImages = [];
+            let isGenerating = false;
+            let currentAbortController = null;
+            
+            const resizeTextarea = () => {
+                messageInput.style.height = 'auto';
+                messageInput.style.height = (messageInput.scrollHeight) + 'px';
+            };
+            messageInput.addEventListener('input', resizeTextarea);
+
+            const getBaseUrl = () => {
+                let url = serverUrlInput.value.trim();
+                return url.endsWith('/') ? url.slice(0, -1) : url;
+            };
+
+            const showToast = (message, isError = true) => {
+                toastMessage.textContent = message;
+                toastPrefix.textContent = isError ? '[ERROR]' : '[OK]';
+                
+                toast.className = `absolute top-4 left-1/2 transform -translate-x-1/2 border px-4 py-2 z-50 transition-opacity duration-300 opacity-100 bg-black shadow-lg shadow-black ${isError ? 'border-red-500 text-red-500' : 'border-green-500 text-green-500'}`;
+                toast.classList.remove('hidden');
+                
+                setTimeout(() => {
+                    toast.classList.remove('opacity-100');
+                    toast.classList.add('opacity-0');
+                    setTimeout(() => toast.classList.add('hidden'), 300);
+                }, 4000);
+            };
+
+            const scrollToBottom = () => {
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            };
+
+            const renderGreeting = () => {
+                const wrapper = document.createElement('div');
+                wrapper.className = 'w-full animate-fade-in';
+                wrapper.innerHTML = `
+                    <div><span class="text-green-500 font-bold">system@ai:~$</span> echo "System Initialized."</div>
+                    <div class="text-gray-300 mt-1 pl-4 border-l-2 border-green-900">
+                        System Online. Connected to API. Ready for standard input.
+                    </div>
+                `;
+                chatContainer.appendChild(wrapper);
+                scrollToBottom();
+            };
+
+            const renderUserMessage = (text, imagesBase64 = []) => {
+                const wrapper = document.createElement('div');
+                wrapper.className = 'w-full animate-fade-in mt-2';
+                
+                let imagesHtml = '';
+                if (imagesBase64.length > 0) {
+                    imagesHtml = '<div class="flex flex-wrap gap-4 mt-2">';
+                    imagesBase64.forEach(img => {
+                        imagesHtml += `<img src="${img}" alt="upload" class="max-w-[200px] max-h-[200px] border border-yellow-700 object-cover p-1 bg-black">`;
+                    });
+                    imagesHtml += '</div>';
+                }
+
+                const escapedText = text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                const formattedText = escapedText.replace(/\n/g, '<br>');
+
+                wrapper.innerHTML = `
+                    <div><span class="text-blue-400 font-bold">user@local:~$</span> <span class="text-gray-100">${formattedText}</span></div>
+                    ${imagesHtml}
+                `;
+                chatContainer.appendChild(wrapper);
+                scrollToBottom();
+            };
+
+            const createAiMessageContainer = () => {
+                const wrapper = document.createElement('div');
+                wrapper.className = 'w-full animate-fade-in mt-4 mb-8';
+                
+                wrapper.innerHTML = `
+                    <div><span class="text-green-500 font-bold">system@ai:~$</span> <span class="text-green-800 animate-pulse">executing processing...</span></div>
+                    
+                    <div class="pl-4 mt-2 border-l-2 border-green-900">
+                        <details class="thinking-details hidden mb-3 text-sm">
+                            <summary class="cursor-pointer select-none text-gray-500 hover:text-gray-400 transition-colors font-bold">
+                                > [SHOW_DEBUG_TRACE]
+                            </summary>
+                            <div class="thinking-content whitespace-pre-wrap border border-gray-800 bg-gray-950 text-gray-400 p-2 mt-2 font-mono text-xs overflow-x-auto"></div>
+                        </details>
+                        <div class="message-content text-container blinking-cursor text-green-400 mt-1"></div>
+                    </div>
+                `;
+                chatContainer.appendChild(wrapper);
+                scrollToBottom();
+                
+                return {
+                    root: wrapper,
+                    content: wrapper.querySelector('.text-container'),
+                    thinkingDetails: wrapper.querySelector('.thinking-details'),
+                    thinkingContent: wrapper.querySelector('.thinking-content'),
+                    statusText: wrapper.querySelector('.animate-pulse')
+                };
+            };
+
+            const formatBasicMarkdown = (text) => {
+                if (!text) return '';
+                let formatted = text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                formatted = formatted.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+                formatted = formatted.replace(/`([^`]+)`/g, '<code class="text-yellow-400">$1</code>');
+                formatted = formatted.replace(/\*\*([^\*]+)\*\*/g, '<strong class="text-white">$1</strong>');
+                formatted = formatted.replace(/\*([^\*]+)\*/g, '<em class="text-gray-300">$1</em>');
+                formatted = formatted.replace(/\n/g, '<br>');
+                return formatted;
+            };
+
+            uploadBtn.addEventListener('click', () => fileUpload.click());
+
+            fileUpload.addEventListener('change', (e) => {
+                const files = Array.from(e.target.files);
+                if (files.length === 0) return;
+
+                files.forEach(file => {
+                    if (!file.type.startsWith('image/')) {
+                        showToast(`File ${file.name} is not an image.`);
+                        return;
+                    }
+
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                        selectedImages.push({ name: file.name, data: event.target.result });
+                        updateImagePreview();
+                    };
+                    reader.readAsDataURL(file);
+                });
+                fileUpload.value = ''; 
+            });
+
+            const updateImagePreview = () => {
+                if (selectedImages.length > 0) {
+                    imagePreviewContainer.classList.remove('hidden');
+                    imagePreviewContainer.innerHTML = '';
+                    
+                    selectedImages.forEach((img, index) => {
+                        const previewDiv = document.createElement('div');
+                        previewDiv.className = 'image-preview-wrapper';
+                        previewDiv.innerHTML = `
+                            <img src="${img.data}" alt="preview" class="h-16 w-16 object-cover border border-yellow-600">
+                            <div class="remove-image-btn" data-index="${index}">[X]</div>
+                        `;
+                        imagePreviewContainer.appendChild(previewDiv);
+                    });
+
+                    document.querySelectorAll('.remove-image-btn').forEach(btn => {
+                        btn.addEventListener('click', function() {
+                            const idx = parseInt(this.getAttribute('data-index'));
+                            selectedImages.splice(idx, 1);
+                            updateImagePreview();
+                        });
+                    });
+                } else {
+                    imagePreviewContainer.classList.add('hidden');
+                    imagePreviewContainer.innerHTML = '';
+                }
+            };
+
+            const fetchHistory = async (showSuccess = false) => {
+                try {
+                    const response = await fetch(`${getBaseUrl()}/history`, { method: 'GET', mode: 'cors' });
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    
+                    const data = await response.json();
+                    chatContainer.innerHTML = ''; 
+                    
+                    if (data && data.length > 0) {
+                         data.forEach(msg => {
+                             if (msg.role === 'user') {
+                                 renderUserMessage(msg.content || msg.prompt, msg.images || []);
+                             } else if (msg.role === 'assistant' || msg.role === 'model') {
+                                 const aiNodes = createAiMessageContainer();
+                                 aiNodes.statusText.classList.add('hidden');
+                                 aiNodes.content.classList.remove('blinking-cursor');
+                                 
+                                 if (msg.thinking) {
+                                     aiNodes.thinkingDetails.classList.remove('hidden');
+                                     aiNodes.thinkingContent.innerHTML = formatBasicMarkdown(msg.thinking);
+                                 }
+                                 aiNodes.content.innerHTML = formatBasicMarkdown(msg.content);
+                             }
+                         });
+                    } else {
+                        renderGreeting();
+                    }
+
+                    if (showSuccess) showToast(`Connection OK to ${getBaseUrl()}`, false);
+                    return true;
+                } catch (error) {
+                    console.error("History fetch error:", error);
+                    if (showSuccess) showToast(`Connection Failed: ${error.message}`);
+                    return false;
+                }
+            };
+
+            connectBtn.addEventListener('click', async () => {
+                const originalContent = connectBtn.innerHTML;
+                connectBtn.innerHTML = '[WAIT...]';
+                connectBtn.disabled = true;
+                await fetchHistory(true);
+                connectBtn.innerHTML = originalContent;
+                connectBtn.disabled = false;
+            });
+
+            clearBtn.addEventListener('click', async () => {
+                if(confirm("Execute clear_history.sh?")) {
+                    try {
+                        const response = await fetch(`${getBaseUrl()}/clear`, { method: 'POST', mode: 'cors' });
+                        if (response.ok) {
+                            chatContainer.innerHTML = '';
+                            renderGreeting();
+                            showToast("History purged.", false);
+                        } else {
+                            throw new Error('Server error');
+                        }
+                    } catch (error) {
+                        showToast("Failed to purge server logs.");
+                        chatContainer.innerHTML = ''; 
+                        renderGreeting();
+                    }
+                }
+            });
+
+            const setGeneratingState = (generating) => {
+                isGenerating = generating;
+                if (generating) {
+                    sendBtn.classList.add('hidden');
+                    stopBtn.classList.remove('hidden');
+                    messageInput.disabled = true;
+                    uploadBtn.disabled = true;
+                } else {
+                    sendBtn.classList.remove('hidden');
+                    stopBtn.classList.add('hidden');
+                    messageInput.disabled = false;
+                    uploadBtn.disabled = false;
+                    messageInput.focus();
+                }
+            };
+
+            stopBtn.addEventListener('click', () => {
+                if (currentAbortController) {
+                    currentAbortController.abort();
+                    currentAbortController = null;
+                }
+                setGeneratingState(false);
+            });
+
+            chatForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                
+                const text = messageInput.value.trim();
+                const imagesToSubmit = [...selectedImages]; 
+                
+                if (!text && imagesToSubmit.length === 0) return;
+                
+                renderUserMessage(text, imagesToSubmit.map(img => img.data));
+                
+                messageInput.value = '';
+                resizeTextarea();
+                selectedImages = [];
+                updateImagePreview();
+                
+                const aiNodes = createAiMessageContainer();
+                setGeneratingState(true);
+
+                const payload = {
+                    prompt: text,
+                    images: imagesToSubmit.map(img => img.data) 
+                };
+
+                currentAbortController = new AbortController();
+
+                try {
+                    const response = await fetch(`${getBaseUrl()}/chat`, {
+                        method: 'POST',
+                        mode: 'cors',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Accept': 'text/event-stream' 
+                        },
+                        body: JSON.stringify(payload),
+                        signal: currentAbortController.signal
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+
+                    aiNodes.statusText.classList.add('hidden');
+
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder('utf-8');
+                    let fullContentResponse = "";
+                    let fullThinkingResponse = "";
+                    let buffer = "";
+
+                    while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n');
+                        buffer = ""; 
+
+                        for (let i = 0; i < lines.length; i++) {
+                            const line = lines[i];
+                            
+                            if (line.startsWith('data: ')) {
+                                const dataStr = line.substring(6).trim();
+                                
+                                if (dataStr === '[DONE]') continue; 
+
+                                try {
+                                    const dataObj = JSON.parse(dataStr);
+                                    
+                                    if (dataObj.type === 'thinking') {
+                                        aiNodes.thinkingDetails.classList.remove('hidden');
+                                        aiNodes.thinkingDetails.open = true; 
+                                        
+                                        fullThinkingResponse += (dataObj.data || "");
+                                        aiNodes.thinkingContent.innerHTML = formatBasicMarkdown(fullThinkingResponse);
+                                        
+                                        if (!fullContentResponse) {
+                                            aiNodes.content.classList.remove('blinking-cursor');
+                                            aiNodes.thinkingContent.classList.add('blinking-cursor');
+                                        }
+                                        
+                                    } else if (dataObj.type === 'content') {
+                                        aiNodes.thinkingContent.classList.remove('blinking-cursor');
+                                        aiNodes.content.classList.add('blinking-cursor');
+                                        
+                                        fullContentResponse += (dataObj.data || "");
+                                        aiNodes.content.innerHTML = formatBasicMarkdown(fullContentResponse);
+                                    } else {
+                                        const textChunk = dataObj.chunk || dataObj.content || dataObj.text || ""; 
+                                        fullContentResponse += textChunk;
+                                        aiNodes.content.innerHTML = formatBasicMarkdown(fullContentResponse);
+                                    }
+                                } catch (e) {
+                                    aiNodes.thinkingContent.classList.remove('blinking-cursor');
+                                    aiNodes.content.classList.add('blinking-cursor');
+                                    fullContentResponse += dataStr;
+                                    aiNodes.content.innerHTML = formatBasicMarkdown(fullContentResponse);
+                                }
+                                scrollToBottom();
+                            } else if (line.trim() !== '') {
+                                if (i === lines.length - 1) {
+                                    buffer = line;
+                                }
+                            }
+                        }
+                    }
+
+                    aiNodes.content.classList.remove('blinking-cursor');
+                    aiNodes.thinkingContent.classList.remove('blinking-cursor');
+
+                } catch (error) {
+                    aiNodes.statusText.classList.add('hidden');
+                    if (error.name === 'AbortError') {
+                        aiNodes.content.classList.remove('blinking-cursor');
+                        aiNodes.thinkingContent.classList.remove('blinking-cursor');
+                        aiNodes.content.innerHTML += '<br><span class="text-red-500 font-bold">^C [SIGINT] Process terminated.</span>';
+                    } else {
+                        console.error('Streaming error:', error);
+                        aiNodes.content.classList.remove('blinking-cursor');
+                        aiNodes.thinkingContent.classList.remove('blinking-cursor');
+                        
+                        let errorMessage = error.message;
+                        aiNodes.content.innerHTML += `<br><span class="text-red-500 font-bold">FATAL_ERROR: ${errorMessage}</span>`;
+                        showToast("Connection Interrupted");
+                    }
+                } finally {
+                    setGeneratingState(false);
+                    currentAbortController = null;
+                }
+            });
+
+            messageInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    if (!isGenerating) {
+                        chatForm.dispatchEvent(new Event('submit'));
+                    }
+                }
+            });
+
+            const style = document.createElement('style');
+            style.textContent = `
+                @keyframes fadeIn {
+                    from { opacity: 0; }
+                    to { opacity: 1; }
+                }
+                .animate-fade-in {
+                    animation: fadeIn 0.2s ease-in forwards;
+                }
+            `;
+            document.head.appendChild(style);
+        });
+    </script>
+</body>
+</html>

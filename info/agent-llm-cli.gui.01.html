@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full antialiased dark:bg-gray-900 dark:text-gray-100">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Streaming Chat Client</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        /* Custom scrollbar for a cleaner look */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 4px;
+        }
+        .dark ::-webkit-scrollbar-thumb {
+            background: #475569;
+        }
+        
+        /* Markdown-like styling for AI responses */
+        .message-content p { margin-bottom: 0.5rem; }
+        .message-content p:last-child { margin-bottom: 0; }
+        .message-content pre {
+            background-color: #1e293b;
+            color: #e2e8f0;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            overflow-x: auto;
+            margin-top: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        .message-content code {
+            font-family: monospace;
+            background-color: rgba(148, 163, 184, 0.2);
+            padding: 0.125rem 0.25rem;
+            border-radius: 0.25rem;
+        }
+        .message-content pre code {
+            background-color: transparent;
+            padding: 0;
+        }
+
+        /* Blinking cursor for streaming effect */
+        .blinking-cursor::after {
+            content: '▌';
+            display: inline-block;
+            animation: blink 1s step-end infinite;
+            margin-left: 2px;
+            color: #3b82f6; /* Tailwind blue-500 */
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+        }
+
+        /* Image preview container styles */
+        .image-preview-wrapper {
+            position: relative;
+            display: inline-block;
+            margin: 0.5rem;
+        }
+        .remove-image-btn {
+            position: absolute;
+            top: -0.5rem;
+            right: -0.5rem;
+            background-color: #ef4444;
+            color: white;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 12px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+    </style>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#3b82f6', // blue-500
+                        secondary: '#64748b', // slate-500
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="h-full flex flex-col bg-gray-50 dark:bg-gray-900 transition-colors duration-200">
+
+    <!-- Header -->
+    <header class="bg-white dark:bg-gray-800 shadow-sm z-10 p-4 flex justify-between items-center border-b border-gray-200 dark:border-gray-700">
+        <div class="flex items-center space-x-3">
+            <div class="bg-primary text-white p-2 rounded-lg flex items-center justify-center">
+                <i class="fa-solid fa-robot text-xl"></i>
+            </div>
+            <h1 class="text-xl font-semibold text-gray-800 dark:text-white">AI Assistant</h1>
+        </div>
+        
+        <div class="flex items-center space-x-4">
+            <!-- Server URL Configuration -->
+            <div class="hidden md:flex items-center space-x-2">
+                <label for="server-url" class="text-sm text-gray-500 dark:text-gray-400">Server API URL:</label>
+                <div class="flex items-center rounded shadow-sm">
+                    <input type="text" id="server-url" value="http://localhost:8080" class="text-sm bg-gray-100 dark:bg-gray-700 border border-transparent dark:border-gray-600 rounded-l px-2 py-1 focus:ring-2 focus:ring-primary focus:outline-none dark:text-white w-48 transition-all">
+                    <button id="connect-btn" class="bg-gray-200 hover:bg-gray-300 dark:bg-gray-600 dark:hover:bg-gray-500 text-gray-700 dark:text-gray-200 text-sm px-3 py-1 rounded-r border-l border-gray-300 dark:border-gray-500 transition-colors focus:outline-none focus:ring-2 focus:ring-primary font-medium" title="Connect & Sync History">
+                        Connect
+                    </button>
+                </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <button id="clear-btn" class="text-gray-500 hover:text-red-500 dark:text-gray-400 dark:hover:text-red-400 transition-colors" title="Clear Chat History">
+                <i class="fa-solid fa-trash-can"></i>
+            </button>
+            <button id="theme-toggle" class="text-gray-500 hover:text-primary dark:text-gray-400 dark:hover:text-primary transition-colors" title="Toggle Dark/Light Mode">
+                <i class="fa-solid fa-moon"></i>
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Chat Area -->
+    <main class="flex-1 overflow-hidden flex flex-col relative w-full max-w-4xl mx-auto p-4 sm:p-6">
+        
+        <!-- Error/Notification Toast -->
+        <div id="toast" class="absolute top-4 left-1/2 transform -translate-x-1/2 bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded shadow-md z-50 hidden transition-opacity duration-300 opacity-0" role="alert">
+            <p id="toast-message" class="font-bold">Error occurred</p>
+        </div>
+
+        <!-- Chat History Container -->
+        <div id="chat-container" class="flex-1 overflow-y-auto space-y-6 pb-4 scroll-smooth">
+            <!-- Initial Greeting -->
+            <div class="flex w-full justify-start">
+                <div class="flex space-x-3 max-w-[85%]">
+                    <div class="flex-shrink-0 w-8 h-8 rounded-full bg-primary flex items-center justify-center text-white mt-1 shadow-md">
+                        <i class="fa-solid fa-robot text-sm"></i>
+                    </div>
+                    <div class="bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 rounded-2xl rounded-tl-sm p-4 shadow-sm border border-gray-100 dark:border-gray-700">
+                        <div class="message-content">
+                            <p>Hello! I'm connected and ready to help. You can type a message or upload images to chat with me.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Input Area Container -->
+        <div class="mt-4 bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-200 dark:border-gray-700 p-3 sm:p-4 relative">
+            
+            <!-- Image Preview Area -->
+            <div id="image-preview-container" class="flex flex-wrap gap-2 mb-2 hidden">
+                <!-- Previews will be injected here -->
+            </div>
+
+            <form id="chat-form" class="flex items-end space-x-2">
+                
+                <!-- File Input (Hidden) -->
+                <input type="file" id="file-upload" accept="image/*" multiple class="hidden">
+                
+                <!-- Upload Button -->
+                <button type="button" id="upload-btn" class="flex-shrink-0 w-10 h-10 rounded-full text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700 flex items-center justify-center transition-colors focus:outline-none focus:ring-2 focus:ring-primary" title="Upload Images">
+                    <i class="fa-solid fa-image"></i>
+                </button>
+
+                <!-- Text Input -->
+                <div class="flex-1 relative">
+                    <textarea id="message-input" rows="1" class="w-full bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-white rounded-xl py-3 px-4 focus:outline-none focus:ring-2 focus:ring-primary focus:bg-white dark:focus:bg-gray-600 resize-none overflow-hidden transition-all placeholder-gray-400 dark:placeholder-gray-500" placeholder="Type your message here..." style="min-height: 48px; max-height: 150px;"></textarea>
+                </div>
+
+                <!-- Send Button -->
+                <button type="submit" id="send-btn" class="flex-shrink-0 w-10 h-10 rounded-full bg-primary hover:bg-blue-600 text-white flex items-center justify-center transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary shadow-md disabled:opacity-50 disabled:cursor-not-allowed">
+                    <i class="fa-solid fa-paper-plane"></i>
+                </button>
+                
+                <!-- Stop Generation Button (Hidden by default) -->
+                <button type="button" id="stop-btn" class="flex-shrink-0 w-10 h-10 rounded-full bg-red-500 hover:bg-red-600 text-white items-center justify-center transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 shadow-md hidden">
+                    <i class="fa-solid fa-stop"></i>
+                </button>
+            </form>
+            
+            <div class="text-xs text-center text-gray-400 dark:text-gray-500 mt-2">
+                Press Enter to send, Shift+Enter for new line.
+            </div>
+        </div>
+    </main>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- DOM Elements ---
+            const chatContainer = document.getElementById('chat-container');
+            const chatForm = document.getElementById('chat-form');
+            const messageInput = document.getElementById('message-input');
+            const sendBtn = document.getElementById('send-btn');
+            const stopBtn = document.getElementById('stop-btn');
+            const fileUpload = document.getElementById('file-upload');
+            const uploadBtn = document.getElementById('upload-btn');
+            const imagePreviewContainer = document.getElementById('image-preview-container');
+            const clearBtn = document.getElementById('clear-btn');
+            const themeToggle = document.getElementById('theme-toggle');
+            const serverUrlInput = document.getElementById('server-url');
+            const connectBtn = document.getElementById('connect-btn');
+            const toast = document.getElementById('toast');
+            const toastMessage = document.getElementById('toast-message');
+
+            // --- State ---
+            let selectedImages = []; // Array of base64 strings
+            let isGenerating = false;
+            let currentAbortController = null; // To abort fetch requests
+            
+            // Assuming your aiohttp server expects a specific structure. 
+            // We'll define the expected payload here to be adaptable.
+            
+            // --- Helper Functions ---
+            
+            // Auto-resize textarea
+            const resizeTextarea = () => {
+                messageInput.style.height = 'auto';
+                messageInput.style.height = (messageInput.scrollHeight) + 'px';
+            };
+            messageInput.addEventListener('input', resizeTextarea);
+
+            // Get base Server URL
+            const getBaseUrl = () => {
+                let url = serverUrlInput.value.trim();
+                // Remove trailing slash if present
+                return url.endsWith('/') ? url.slice(0, -1) : url;
+            };
+
+            // Show Toast Notification
+            const showToast = (message, isError = true) => {
+                toastMessage.textContent = message;
+                toast.className = `absolute top-4 left-1/2 transform -translate-x-1/2 p-4 rounded shadow-md z-50 transition-opacity duration-300 opacity-100 ${isError ? 'bg-red-100 border-l-4 border-red-500 text-red-700' : 'bg-green-100 border-l-4 border-green-500 text-green-700'}`;
+                toast.classList.remove('hidden');
+                
+                setTimeout(() => {
+                    toast.classList.remove('opacity-100');
+                    toast.classList.add('opacity-0');
+                    setTimeout(() => toast.classList.add('hidden'), 300); // Wait for transition
+                }, 3000);
+            };
+
+            // Scroll to bottom
+            const scrollToBottom = () => {
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            };
+
+            // Dark Mode Toggle
+            const toggleTheme = () => {
+                document.documentElement.classList.toggle('dark');
+                const icon = themeToggle.querySelector('i');
+                if (document.documentElement.classList.contains('dark')) {
+                    icon.classList.replace('fa-moon', 'fa-sun');
+                } else {
+                    icon.classList.replace('fa-sun', 'fa-moon');
+                }
+            };
+            themeToggle.addEventListener('click', toggleTheme);
+            
+            // Initialize theme based on system preference
+            if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+                document.documentElement.classList.add('dark');
+                themeToggle.querySelector('i').classList.replace('fa-moon', 'fa-sun');
+            }
+
+            // --- UI Rendering Functions ---
+
+            // Render Initial Greeting
+            const renderGreeting = () => {
+                const wrapper = document.createElement('div');
+                wrapper.className = 'flex w-full justify-start animate-fade-in-up';
+                wrapper.innerHTML = `
+                    <div class="flex space-x-3 max-w-[85%]">
+                        <div class="flex-shrink-0 w-8 h-8 rounded-full bg-primary flex items-center justify-center text-white mt-1 shadow-md">
+                            <i class="fa-solid fa-robot text-sm"></i>
+                        </div>
+                        <div class="bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 rounded-2xl rounded-tl-sm p-4 shadow-sm border border-gray-100 dark:border-gray-700">
+                            <div class="message-content">
+                                <p>Hello! I'm connected to the server and ready to help. You can type a message or upload images.</p>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                chatContainer.appendChild(wrapper);
+                scrollToBottom();
+            };
+
+            // Render a complete user message (text + images)
+            const renderUserMessage = (text, imagesBase64 = []) => {
+                const wrapper = document.createElement('div');
+                wrapper.className = 'flex w-full justify-end animate-fade-in-up';
+                
+                let imagesHtml = '';
+                if (imagesBase64.length > 0) {
+                    imagesHtml = '<div class="flex flex-wrap gap-2 mb-2 justify-end">';
+                    imagesBase64.forEach(img => {
+                        imagesHtml += `<img src="${img}" alt="User upload" class="max-w-[150px] max-h-[150px] rounded-lg border border-gray-200 dark:border-gray-600 object-cover">`;
+                    });
+                    imagesHtml += '</div>';
+                }
+
+                // Escape HTML to prevent XSS
+                const escapedText = text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                // Convert newlines to <br>
+                const formattedText = escapedText.replace(/\n/g, '<br>');
+
+                wrapper.innerHTML = `
+                    <div class="flex space-x-3 max-w-[85%] flex-row-reverse space-x-reverse">
+                        <div class="flex-shrink-0 w-8 h-8 rounded-full bg-gray-300 dark:bg-gray-600 flex items-center justify-center text-gray-600 dark:text-gray-200 mt-1 shadow-md">
+                            <i class="fa-solid fa-user text-sm"></i>
+                        </div>
+                        <div class="bg-primary text-white rounded-2xl rounded-tr-sm p-4 shadow-sm">
+                            ${imagesHtml}
+                            <div class="message-content break-words">${formattedText}</div>
+                        </div>
+                    </div>
+                `;
+                chatContainer.appendChild(wrapper);
+                scrollToBottom();
+            };
+
+            // Render an empty AI message container and return the element where text will be streamed
+            const createAiMessageContainer = () => {
+                const wrapper = document.createElement('div');
+                wrapper.className = 'flex w-full justify-start animate-fade-in-up';
+                
+                wrapper.innerHTML = `
+                    <div class="flex space-x-3 max-w-[85%] w-full">
+                        <div class="flex-shrink-0 w-8 h-8 rounded-full bg-primary flex items-center justify-center text-white mt-1 shadow-md">
+                            <i class="fa-solid fa-robot text-sm"></i>
+                        </div>
+                        <div class="bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 rounded-2xl rounded-tl-sm p-4 shadow-sm border border-gray-100 dark:border-gray-700 min-w-[50px] flex-1 overflow-hidden">
+                            <div class="message-wrapper">
+                                <details class="thinking-details hidden mb-3 text-sm text-gray-500 dark:text-gray-400">
+                                    <summary class="cursor-pointer select-none font-medium text-gray-600 dark:text-gray-300 mb-2 hover:text-gray-800 dark:hover:text-gray-100 transition-colors flex items-center">
+                                        <i class="fa-solid fa-brain mr-2"></i> Thought Process
+                                    </summary>
+                                    <div class="thinking-content whitespace-pre-wrap border-l-2 border-gray-300 dark:border-gray-600 pl-3 py-1 ml-2 font-mono text-xs overflow-x-auto"></div>
+                                </details>
+                                <div class="message-content text-container blinking-cursor"></div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                chatContainer.appendChild(wrapper);
+                scrollToBottom();
+                
+                // Return an object with references to the specific elements
+                return {
+                    root: wrapper,
+                    content: wrapper.querySelector('.text-container'),
+                    thinkingDetails: wrapper.querySelector('.thinking-details'),
+                    thinkingContent: wrapper.querySelector('.thinking-content')
+                };
+            };
+
+            // Basic Markdown formatter (since we don't have marked.js, we do simple replacement)
+            const formatBasicMarkdown = (text) => {
+                if (!text) return '';
+                
+                // Escape basic HTML first
+                let formatted = text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                
+                // Code blocks ```code```
+                formatted = formatted.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+                
+                // Inline code `code`
+                formatted = formatted.replace(/`([^`]+)`/g, '<code>$1</code>');
+                
+                // Bold **text**
+                formatted = formatted.replace(/\*\*([^\*]+)\*\*/g, '<strong>$1</strong>');
+                
+                // Italic *text*
+                formatted = formatted.replace(/\*([^\*]+)\*/g, '<em>$1</em>');
+                
+                // New lines
+                formatted = formatted.replace(/\n/g, '<br>');
+                
+                return formatted;
+            };
+
+
+            // Handle file selection
+            uploadBtn.addEventListener('click', () => fileUpload.click());
+
+            fileUpload.addEventListener('change', (e) => {
+                const files = Array.from(e.target.files);
+                if (files.length === 0) return;
+
+                // Process each file
+                files.forEach(file => {
+                    if (!file.type.startsWith('image/')) {
+                        showToast(`File ${file.name} is not an image.`);
+                        return;
+                    }
+
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                        const base64String = event.target.result;
+                        selectedImages.push({
+                            name: file.name,
+                            data: base64String
+                        });
+                        updateImagePreview();
+                    };
+                    reader.readAsDataURL(file);
+                });
+                
+                // Reset input so the same file can be selected again if needed
+                fileUpload.value = ''; 
+            });
+
+            // Update the preview UI
+            const updateImagePreview = () => {
+                if (selectedImages.length > 0) {
+                    imagePreviewContainer.classList.remove('hidden');
+                    imagePreviewContainer.innerHTML = '';
+                    
+                    selectedImages.forEach((img, index) => {
+                        const previewDiv = document.createElement('div');
+                        previewDiv.className = 'image-preview-wrapper animate-fade-in';
+                        
+                        previewDiv.innerHTML = `
+                            <img src="${img.data}" alt="${img.name}" class="h-16 w-16 object-cover rounded-lg border-2 border-gray-300 dark:border-gray-600">
+                            <div class="remove-image-btn" data-index="${index}">
+                                <i class="fa-solid fa-xmark"></i>
+                            </div>
+                        `;
+                        imagePreviewContainer.appendChild(previewDiv);
+                    });
+
+                    // Add event listeners to remove buttons
+                    document.querySelectorAll('.remove-image-btn').forEach(btn => {
+                        btn.addEventListener('click', function() {
+                            const idx = parseInt(this.getAttribute('data-index'));
+                            selectedImages.splice(idx, 1);
+                            updateImagePreview();
+                        });
+                    });
+                } else {
+                    imagePreviewContainer.classList.add('hidden');
+                    imagePreviewContainer.innerHTML = '';
+                }
+            };
+
+
+            // Fetch History
+            const fetchHistory = async (showSuccess = false) => {
+                try {
+                    const response = await fetch(`${getBaseUrl()}/history`, {
+                        method: 'GET',
+                        mode: 'cors'
+                    });
+                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                    
+                    const data = await response.json();
+                    
+                    // Clear current UI 
+                    chatContainer.innerHTML = ''; 
+                    
+                    if (data && data.length > 0) {
+                         data.forEach(msg => {
+                             if (msg.role === 'user') {
+                                 renderUserMessage(msg.content, msg.images || []);
+                             } else if (msg.role === 'assistant' || msg.role === 'model') {
+                                 const aiNodes = createAiMessageContainer();
+                                 aiNodes.content.classList.remove('blinking-cursor');
+                                 
+                                 // Check if history provides past thoughts
+                                 if (msg.thinking) {
+                                     aiNodes.thinkingDetails.classList.remove('hidden');
+                                     aiNodes.thinkingContent.innerHTML = formatBasicMarkdown(msg.thinking);
+                                 }
+                                 
+                                 aiNodes.content.innerHTML = formatBasicMarkdown(msg.content);
+                             }
+                         });
+                    } else {
+                        renderGreeting();
+                    }
+
+                    if (showSuccess) {
+                        showToast(`Connected to server successfully`, false);
+                    }
+                    return true;
+                } catch (error) {
+                    console.error("History fetch error:", error);
+                    if (showSuccess) {
+                        showToast(`Failed to connect to ${getBaseUrl()}`);
+                    }
+                    return false;
+                }
+            };
+
+            // Connect Button Listener
+            connectBtn.addEventListener('click', async () => {
+                const originalContent = connectBtn.innerHTML;
+                connectBtn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i>';
+                connectBtn.disabled = true;
+
+                // Sync history to verify connection and update UI
+                await fetchHistory(true);
+
+                connectBtn.innerHTML = originalContent;
+                connectBtn.disabled = false;
+            });
+
+            // Clear Chat
+            clearBtn.addEventListener('click', async () => {
+                if(confirm("Are you sure you want to clear the chat history?")) {
+                    try {
+                        const response = await fetch(`${getBaseUrl()}/clear`, {
+                            method: 'POST',
+                            mode: 'cors'
+                        });
+                        
+                        if (response.ok) {
+                            chatContainer.innerHTML = '';
+                            renderGreeting();
+                            showToast("Chat cleared successfully", false);
+                        } else {
+                            throw new Error('Server returned error on clear');
+                        }
+                    } catch (error) {
+                        console.error("Clear chat error:", error);
+                        showToast("Failed to clear chat on server.");
+                        // Clear locally anyway as fallback
+                        chatContainer.innerHTML = ''; 
+                        renderGreeting();
+                    }
+                }
+            });
+
+
+            // Toggle UI state between generating and idle
+            const setGeneratingState = (generating) => {
+                isGenerating = generating;
+                if (generating) {
+                    sendBtn.classList.add('hidden');
+                    stopBtn.classList.remove('hidden');
+                    stopBtn.style.display = 'flex';
+                    messageInput.disabled = true;
+                    uploadBtn.disabled = true;
+                } else {
+                    sendBtn.classList.remove('hidden');
+                    stopBtn.classList.add('hidden');
+                    stopBtn.style.display = 'none';
+                    messageInput.disabled = false;
+                    uploadBtn.disabled = false;
+                    messageInput.focus();
+                }
+            };
+
+            // Handle Stop button
+            stopBtn.addEventListener('click', () => {
+                if (currentAbortController) {
+                    currentAbortController.abort();
+                    currentAbortController = null;
+                }
+                setGeneratingState(false);
+            });
+
+            // Main Chat Submission
+            chatForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                
+                const text = messageInput.value.trim();
+                const imagesToSubmit = [...selectedImages]; // Clone current images
+                
+                if (!text && imagesToSubmit.length === 0) return;
+                
+                // 1. Render User Message
+                renderUserMessage(text, imagesToSubmit.map(img => img.data));
+                
+                // 2. Clear Inputs
+                messageInput.value = '';
+                resizeTextarea();
+                selectedImages = [];
+                updateImagePreview();
+                
+                // 3. Prepare AI Response Container
+                const aiNodes = createAiMessageContainer();
+                setGeneratingState(true);
+
+                // 4. Prepare Payload for Server
+                const payload = {
+                    prompt: text,
+                    // Send only the base64 data part, remove data:image/png;base64, prefix if server prefers, 
+                    // but keeping it is usually safer for mime-type detection on server.
+                    images: imagesToSubmit.map(img => img.data) 
+                };
+
+                currentAbortController = new AbortController();
+
+                try {
+                    // We use fetch to make a POST request and consume the body as a stream (SSE)
+                    const response = await fetch(`${getBaseUrl()}/chat`, {
+                        method: 'POST',
+                        mode: 'cors',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Accept': 'text/event-stream' // Important for SSE
+                        },
+                        body: JSON.stringify(payload),
+                        signal: currentAbortController.signal
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+
+                    // 5. Read the SSE Stream
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder('utf-8');
+                    let fullContentResponse = "";
+                    let fullThinkingResponse = "";
+                    let buffer = "";
+
+                    while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+
+                        // Decode the chunk
+                        buffer += decoder.decode(value, { stream: true });
+                        
+                        // Parse SSE format (data: ... \n\n)
+                        const lines = buffer.split('\n');
+                        buffer = ""; // Reset buffer, we'll put back incomplete lines
+
+                        for (let i = 0; i < lines.length; i++) {
+                            const line = lines[i];
+                            
+                            if (line.startsWith('data: ')) {
+                                const dataStr = line.substring(6).trim();
+                                
+                                if (dataStr === '[DONE]') {
+                                    // Stream finished signal (common convention)
+                                    continue; 
+                                }
+
+                                try {
+                                    const dataObj = JSON.parse(dataStr);
+                                    
+                                    // Handle structured thinking vs content
+                                    if (dataObj.type === 'thinking') {
+                                        aiNodes.thinkingDetails.classList.remove('hidden');
+                                        // Open the details element while generating thinking text
+                                        aiNodes.thinkingDetails.open = true; 
+                                        
+                                        fullThinkingResponse += (dataObj.data || "");
+                                        aiNodes.thinkingContent.innerHTML = formatBasicMarkdown(fullThinkingResponse);
+                                        
+                                        // Keep cursor in thinking area if main content hasn't started
+                                        if (!fullContentResponse) {
+                                            aiNodes.content.classList.remove('blinking-cursor');
+                                            aiNodes.thinkingContent.classList.add('blinking-cursor');
+                                        }
+                                        
+                                    } else if (dataObj.type === 'content') {
+                                        // Switch cursor to main content area
+                                        aiNodes.thinkingContent.classList.remove('blinking-cursor');
+                                        aiNodes.content.classList.add('blinking-cursor');
+                                        
+                                        fullContentResponse += (dataObj.data || "");
+                                        aiNodes.content.innerHTML = formatBasicMarkdown(fullContentResponse);
+                                    } else {
+                                        // Fallback if there's an unexpected type structure
+                                        const textChunk = dataObj.chunk || dataObj.content || dataObj.text || ""; 
+                                        fullContentResponse += textChunk;
+                                        aiNodes.content.innerHTML = formatBasicMarkdown(fullContentResponse);
+                                    }
+                                } catch (e) {
+                                    // If not JSON, assume raw text chunk and append to main content
+                                    // Switch cursor to main content area
+                                    aiNodes.thinkingContent.classList.remove('blinking-cursor');
+                                    aiNodes.content.classList.add('blinking-cursor');
+                                    
+                                    fullContentResponse += dataStr;
+                                    aiNodes.content.innerHTML = formatBasicMarkdown(fullContentResponse);
+                                }
+                                
+                                scrollToBottom();
+                            } else if (line.trim() !== '') {
+                                // If it doesn't start with data: and isn't empty, it might be an incomplete line
+                                // put it back in the buffer for the next chunk
+                                if (i === lines.length - 1) {
+                                    buffer = line;
+                                }
+                            }
+                        }
+                    }
+
+                    // Processing finished naturally
+                    aiNodes.content.classList.remove('blinking-cursor');
+                    aiNodes.thinkingContent.classList.remove('blinking-cursor');
+
+                } catch (error) {
+                    if (error.name === 'AbortError') {
+                        // User stopped generation intentionally
+                        aiNodes.content.classList.remove('blinking-cursor');
+                        aiNodes.thinkingContent.classList.remove('blinking-cursor');
+                        aiNodes.content.innerHTML += ' <br><em class="text-red-500 text-sm">[Generation Stopped]</em>';
+                    } else {
+                        console.error('Streaming error:', error);
+                        aiNodes.content.classList.remove('blinking-cursor');
+                        aiNodes.thinkingContent.classList.remove('blinking-cursor');
+                        
+                        let errorMessage = error.message;
+                        let extraHelp = "";
+                        
+                        if (errorMessage === "Failed to fetch") {
+                            extraHelp = `
+                                <div class="mt-3 text-sm p-3 bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-200 rounded border border-red-200 dark:border-red-800/50">
+                                    <p class="font-semibold mb-1"><i class="fa-solid fa-circle-info mr-1"></i> Why is this happening?</p>
+                                    <ul class="list-disc pl-5 space-y-1">
+                                        <li><strong>CORS / Preflight Blocked:</strong> Your Python server must respond to <code>OPTIONS</code> requests and include <code>Access-Control-Allow-Origin: *</code> headers.</li>
+                                        <li><strong>Mixed Content:</strong> If you are running this HTML on an <code>https://</code> site, browsers block requests to <code>http://localhost</code>. You may need to run the HTML locally.</li>
+                                        <li><strong>Server Unreachable:</strong> The server at <code>${getBaseUrl()}</code> is offline or the port is wrong.</li>
+                                    </ul>
+                                </div>`;
+                        }
+
+                        aiNodes.content.innerHTML += `<br><span class="text-red-500 font-semibold">Error: ${errorMessage}</span>${extraHelp}`;
+                        showToast("Connection error while streaming response.");
+                    }
+                } finally {
+                    setGeneratingState(false);
+                    currentAbortController = null;
+                }
+            });
+
+            // Handle Enter to send, Shift+Enter for new line
+            messageInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    if (!isGenerating) {
+                        chatForm.dispatchEvent(new Event('submit'));
+                    }
+                }
+            });
+
+            // Add simple CSS animations
+            const style = document.createElement('style');
+            style.textContent = `
+                @keyframes fadeInUp {
+                    from { opacity: 0; transform: translateY(10px); }
+                    to { opacity: 1; transform: translateY(0); }
+                }
+                .animate-fade-in-up {
+                    animation: fadeInUp 0.3s ease-out forwards;
+                }
+                @keyframes fadeIn {
+                    from { opacity: 0; }
+                    to { opacity: 1; }
+                }
+                .animate-fade-in {
+                    animation: fadeIn 0.2s ease-in forwards;
+                }
+            `;
+            document.head.appendChild(style);
+
+            // Initial fetch of history
+            // Commenting out by default to avoid CORS errors immediately on load in preview environments
+            // fetchHistory(); 
+        });
+    </script>
+</body>
+</html>
